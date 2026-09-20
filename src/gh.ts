@@ -175,10 +175,17 @@ export interface DraftComment {
  * GitHub until they press Submit. The `event` field is deliberately never sent — sending it
  * (COMMENT/APPROVE/REQUEST_CHANGES) would publish the review immediately.
  */
-export function stagePendingReview(cwd: string, number: number, body: string, comments: DraftComment[]): Promise<{ ok: boolean; message: string }> {
+export function stagePendingReview(
+  cwd: string,
+  number: number,
+  body: string,
+  comments: DraftComment[],
+  event?: 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES', // omitted = pending; set = submitted immediately
+): Promise<{ ok: boolean; message: string }> {
   // GitHub takes a span as start_line..line; start_side must accompany start_line.
   const payload = JSON.stringify({
     body,
+    ...(event ? { event } : {}),
     comments: comments.map((c) =>
       c.startLine && c.startLine !== c.line
         ? { path: c.path, body: c.body, side: c.side, line: c.line, start_line: c.startLine, start_side: c.side }

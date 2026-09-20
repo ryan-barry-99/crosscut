@@ -166,6 +166,11 @@
         "command": "crosscut.openAsPr",
         "title": "Open as Pull Request",
         "icon": "$(git-pull-request)"
+      },
+      {
+        "command": "crosscut.submitReview",
+        "title": "Submit Review to GitHub\u2026",
+        "icon": "$(send)"
       }
     ],
     "menus": {
@@ -301,6 +306,16 @@
           "command": "crosscut.stageReview",
           "when": "view == crosscut && viewItem =~ /\\.drafts$/",
           "group": "inline@1"
+        },
+        {
+          "command": "crosscut.submitReview",
+          "when": "view == crosscut && viewItem =~ /\\.drafts$/ && crosscut.canSubmit",
+          "group": "inline@2"
+        },
+        {
+          "command": "crosscut.submitReview",
+          "when": "view == crosscut && viewItem =~ /\\.pr(\\.drafts)?$/ && crosscut.canSubmit",
+          "group": "3_review@0"
         }
       ],
       "commandPalette": [
@@ -403,6 +418,10 @@
         {
           "command": "crosscut.openAsPr",
           "when": "false"
+        },
+        {
+          "command": "crosscut.submitReview",
+          "when": "false"
         }
       ],
       "editor/title": [
@@ -473,6 +492,11 @@
             "Keep them until you clean up manually."
           ],
           "description": "What to do with pull-request commits this extension fetches into refs/prs/*. They pin objects in the repository."
+        },
+        "crosscut.allowSubmitReview": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show a **Submit Review** action that posts a review to GitHub immediately (comment, approve or request changes). Off by default: staging a **pending** review, which only you can see until you submit it on GitHub, is the safer path."
         }
       }
     }

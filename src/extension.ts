@@ -1833,6 +1833,14 @@ export function activate(context: vscode.ExtensionContext) {
     last = now;
   }, 250);
   context.subscriptions.push({ dispose: () => clearInterval(lag) });
+  // Submitting publishes a review the moment it is clicked, so it is opt-in.
+  const syncSubmitOption = () =>
+    void vscode.commands.executeCommand(
+      'setContext',
+      'crosscut.canSubmit',
+      vscode.workspace.getConfiguration('crosscut').get<boolean>('allowSubmitReview', false),
+    );
+  syncSubmitOption();
   storageRoot = path.join(context.globalStorageUri.fsPath, 'repos');
   const provider = new WorktreeDiffsProvider(context.workspaceState);
   const view = vscode.window.createTreeView('crosscut', { treeDataProvider: provider, showCollapseAll: true });
@@ -1971,6 +1979,55 @@ export function activate(context: vscode.ExtensionContext) {
         `Staged ${list.length} comment${list.length === 1 ? '' : 's'} as a pending review on PR #${n.prNumber}. Nobody sees it until you submit it on GitHub.`,
         'Open PR',
       );
+      if (open) await vscode.commands.executeCommand('crosscut.openOnGitHub', n);
+    }),
+    vscode.commands.registerCommand('crosscut.submitReview', async (n: WorktreeNode) => {
+      const list = drafts.get(n);
+      if (!n.prNumber) return;
+      if (!vscode.workspace.getConfiguration('crosscut').get<boolean>('allowSubmitReview', false)) return;
+      const verdict = await vscode.window.showQuickPick(
+        [
+          { label: '$(comment) Comment', detail: 'Post the comments without approving or requesting changes', event: 'COMMENT' as const },
+          { label: '$(check) Approve', detail: 'Approve the pull request', event: 'APPROVE' as const },
+          { label: '$(request-changes) Request changes', detail: 'Ask for changes before this can merge', event: 'REQUEST_CHANGES' as const },
+        ],
+        { title: `Submit a review on PR #${n.prNumber}${list.length ? ` with ${list.length} comment${list.length === 1 ? '' : 's'}` : ''}` },
+      );
+      if (!verdict) return;
+      const body = await vscode.window.showInputBox({
+        title: `Summary for your ${verdict.event.toLowerCase().replace('_', ' ')} review on PR #${n.prNumber}`,
+        prompt: 'Shown at the top of the review. Submitted together with the comments.',
+        ignoreFocusOut: true,
+      });
+      if (body === undefined) return;
+      if (!body.trim() && !list.length) {
+        vscode.window.showInformationMessage('Nothing to submit: no summary and no comments.');
+        return;
+      }
+      const ok = await vscode.window.showWarningMessage(
+        `Submit this review on PR #${n.prNumber}?`,
+        {
+          modal: true,
+          detail:
+            `It posts immediately as ${verdict.event.toLowerCase().replace('_', ' ')} and everyone watching the pull request can see it` +
+            `${list.length ? `, along with your ${list.length} comment${list.length === 1 ? '' : 's'}` : ''}. This cannot be undone from here.`,
+        },
+        'Submit',
+      );
+      if (ok !== 'Submit') return;
+      log.info(`submitting ${verdict.event} review on PR #${n.prNumber} with ${list.length} comment(s)`);
+      const result = await vscode.window.withProgress({ location: { viewId: 'crosscut' }, title: 'Submitting review…' }, () =>
+        stagePendingReview(n.wt.path, n.prNumber!, body, list.map(({ path, line, startLine, side, body }) => ({ path, line, startLine, side, body })), verdict.event),
+      );
+      if (!result.ok) {
+        log.error(`submit failed: ${result.message}`);
+        vscode.window.showErrorMessage(`Could not submit the review: ${result.message}`, 'Show log').then((a) => a && log.show());
+        return;
+      }
+      log.info(`submitted: ${result.message}`);
+      await drafts.set(n, []);
+      await provider.reloadComments(n);
+      const open = await vscode.window.showInformationMessage(`Submitted your review on PR #${n.prNumber}.`, 'Open PR');
       if (open) await vscode.commands.executeCommand('crosscut.openOnGitHub', n);
     }),
     vscode.commands.registerCommand('crosscut.discardDrafts', async (n: WorktreeNode) => {
@@ -2234,7 +2291,9 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.onDidCloseTextDocument((d) => blamed.delete(d.uri.toString())),
     vscode.workspace.onDidChangeWorkspaceFolders(() => provider.refresh()),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('crosscut')) provider.refresh();
+      if (!e.affectsConfiguration('crosscut')) return;
+      syncSubmitOption();
+      void provider.refresh();
     }),
     vscode.window.onDidChangeWindowState((s) => {
       if (s.focused) provider.scheduleRefresh();
