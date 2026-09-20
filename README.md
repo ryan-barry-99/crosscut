@@ -31,11 +31,21 @@ Each row's file list is cached on disk, and both sides of every changed file are
 
 ## Reviewing
 
-With the [GitHub CLI](https://cli.github.com/) installed and authenticated:
+With the [GitHub CLI](https://cli.github.com/) installed and authenticated, a row that belongs to a pull request — a worktree or branch whose branch has one, or a PR opened from a blame hover — carries its review conversation.
 
-- Inline review comments appear in the diff, with replies grouped into threads.
-- Files and folders show how many comments they carry.
-- Comments you write are saved as **local drafts**. *Stage Review* posts them as a single **pending** review — visible only to you, editable and discardable on GitHub. The extension never submits or publishes a review; you do that on GitHub.
+- Existing review comments appear in the diff, previewed at the end of the line and expandable into full threads, with replies grouped together.
+- Files and folders show how many comments they carry, in the tree and in the multi-file diff.
+- Review summaries and comments GitHub can no longer anchor are listed separately from the row.
+
+### Writing comments
+
+1. Open a file from a pull-request row, so the diff belongs to that PR.
+2. Right-click the line you want to comment on — or hover its gutter and click the `+` that appears. To comment on a span, select the lines first.
+3. Type the comment and press **Add draft comment**.
+
+Only lines the pull request changed can be commented on, because GitHub rejects the rest. If a line offers nothing, it is not part of the diff.
+
+Drafts are stored locally and survive reloads; the row shows how many you have. **Stage Review** sends them as a single **pending** review, which only you can see until you press Submit on GitHub. Setting `crosscut.allowSubmitReview` adds **Submit Review**, which posts immediately — it asks for a verdict and a confirmation, and sends your summary along with the comments, which staging cannot do.
 
 ## Housekeeping
 
