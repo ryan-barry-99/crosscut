@@ -2031,15 +2031,6 @@ export function activate(context: vscode.ExtensionContext) {
       const list = drafts.get(n);
       if (!n.prNumber) return;
       if (!vscode.workspace.getConfiguration('crosscut').get<boolean>('allowSubmitReview', false)) return;
-      const verdict = await vscode.window.showQuickPick(
-        [
-          { label: '$(comment) Comment', detail: 'Post the comments without approving or requesting changes', event: 'COMMENT' as const },
-          { label: '$(check) Approve', detail: 'Approve the pull request', event: 'APPROVE' as const },
-          { label: '$(request-changes) Request changes', detail: 'Ask for changes before this can merge', event: 'REQUEST_CHANGES' as const },
-        ],
-        { title: `Submit a review on PR #${n.prNumber}${list.length ? ` with ${list.length} comment${list.length === 1 ? '' : 's'}` : ''}` },
-      );
-      if (!verdict) return;
       // Same constraint as staging: one pending review per person per PR, and a submit POST is
       // rejected just as flatly while one is open.
       const pending = await pendingReviewId(n.wt.path, n.prNumber);
@@ -2052,6 +2043,15 @@ export function activate(context: vscode.ExtensionContext) {
         if (go) await vscode.commands.executeCommand('crosscut.openOnGitHub', n);
         return;
       }
+      const verdict = await vscode.window.showQuickPick(
+        [
+          { label: '$(comment) Comment', detail: 'Post the comments without approving or requesting changes', event: 'COMMENT' as const },
+          { label: '$(check) Approve', detail: 'Approve the pull request', event: 'APPROVE' as const },
+          { label: '$(request-changes) Request changes', detail: 'Ask for changes before this can merge', event: 'REQUEST_CHANGES' as const },
+        ],
+        { title: `Submit a review on PR #${n.prNumber}${list.length ? ` with ${list.length} comment${list.length === 1 ? '' : 's'}` : ''}` },
+      );
+      if (!verdict) return;
       const body = await vscode.window.showInputBox({
         title: `Summary for your ${verdict.event.toLowerCase().replace('_', ' ')} review on PR #${n.prNumber}`,
         prompt: 'Shown at the top of the review. Submitted together with the comments.',
