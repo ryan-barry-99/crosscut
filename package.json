@@ -3,7 +3,7 @@
   "displayName": "Worktree Diffs",
   "description": "See the diffs of every git worktree side by side, with full language support.",
   "version": "0.1.0",
-  "publisher": "CHANGE-ME",
+  "publisher": "ryan-barry-99",
   "license": "MIT",
   "engines": {
     "vscode": "^1.86.0"
@@ -475,9 +475,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/ryan-barry-99/vscode-worktree-diffs.git"
   },
   "bugs": {
-    "url": ""
-  }
+    "url": "https://github.com/ryan-barry-99/vscode-worktree-diffs/issues"
+  },
+  "homepage": "https://github.com/ryan-barry-99/vscode-worktree-diffs#readme"
 }
