@@ -171,6 +171,11 @@
         "command": "crosscut.submitReview",
         "title": "Submit Review to GitHub\u2026",
         "icon": "$(send)"
+      },
+      {
+        "command": "crosscut.discardPendingReview",
+        "title": "Discard Pending Review on GitHub\u2026",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
@@ -316,6 +321,11 @@
           "command": "crosscut.submitReview",
           "when": "view == crosscut && viewItem =~ /\\.pr(\\.drafts)?$/ && crosscut.canSubmit",
           "group": "3_review@0"
+        },
+        {
+          "command": "crosscut.discardPendingReview",
+          "when": "view == crosscut && viewItem =~ /\\.pr(\\.drafts)?$/",
+          "group": "3_review@3"
         }
       ],
       "commandPalette": [
@@ -421,6 +431,10 @@
         },
         {
           "command": "crosscut.submitReview",
+          "when": "false"
+        },
+        {
+          "command": "crosscut.discardPendingReview",
           "when": "false"
         }
       ],

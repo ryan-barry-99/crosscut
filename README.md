@@ -45,7 +45,23 @@ With the [GitHub CLI](https://cli.github.com/) installed and authenticated, a ro
 
 Only lines the pull request changed can be commented on, because GitHub rejects the rest. If a line offers nothing, it is not part of the diff.
 
-Drafts are stored locally and survive reloads; the row shows how many you have. **Stage Review** sends them as a single **pending** review, which only you can see until you press Submit on GitHub. Setting `crosscut.allowSubmitReview` adds **Submit Review**, which posts immediately — it asks for a verdict and a confirmation, and sends your summary along with the comments, which staging cannot do.
+Drafts are stored locally and survive reloads; the row shows how many you have.
+
+### Sending a review
+
+**Stage Review** sends your drafts to GitHub as a single **pending** review. Only you can see it, and it stays editable and discardable there until you press Submit yourself. GitHub allows one pending review per person per pull request, so the extension checks for an existing one first, and **Discard Pending Review on GitHub…** deletes yours after confirming how many unsubmitted comments it holds.
+
+Staging cannot carry a summary: GitHub's *Finish your review* dialog does not pre-fill from a pending review's body, so a write-up staged with the comments is lost unless you retype it there. Submitting directly avoids that.
+
+To submit directly, set `crosscut.allowSubmitReview` to `true`. A **Submit Review to GitHub…** action then appears on pull-request rows:
+
+1. Write the comments as usual — they are still local drafts until this point.
+2. Press **Submit Review to GitHub…** on the row.
+3. Choose the verdict: comment, approve, or request changes.
+4. Type the summary, which is sent together with the comments as the review body.
+5. Confirm. It posts immediately and everyone watching the pull request can see it.
+
+A summary with no comments is a valid review. GitHub does not let you approve your own pull request, and says so if you try.
 
 ## Housekeeping
 
@@ -62,6 +78,7 @@ Drafts are stored locally and survive reloads; the row shows how many you have. 
 | `crosscut.showPrComments` | `true` | Render pull-request review comments in diffs. |
 | `crosscut.blameHover` | `true` | Show blame for the hovered line. |
 | `crosscut.fetchedPrRefs` | `session` | Lifetime of fetched PR refs: `session`, `week` or `keep`. |
+| `crosscut.allowSubmitReview` | `false` | Show **Submit Review**, which posts a review to GitHub immediately instead of staging it as pending. |
 
 ## Requirements
 

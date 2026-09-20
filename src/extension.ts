@@ -3,7 +3,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { BlameLine, blameFile } from './blame';
-import { DraftComment, PrDetails, PrInfo, ReviewComment, ReviewSummary, commitAuthorLogin, RefTitle, refTitles, prComments, prDetails, prForCommit, prReviews, prsByBranch, repoUrl, setGhErrorHandler, stagePendingReview, pendingReviewId } from './gh';
+import { DraftComment, PrDetails, PrInfo, ReviewComment, ReviewSummary, commitAuthorLogin, RefTitle, refTitles, prComments, prDetails, prForCommit, prReviews, prsByBranch, repoUrl, setGhErrorHandler, stagePendingReview, pendingReviewId, pendingReviewComments, deletePendingReview } from './gh';
 import {
   Change,
   Worktree,
@@ -1659,18 +1659,29 @@ function decorateAllVisible() {
  * the next time you open that file — and several expanded threads shove the diff around. Threads
  * are collapsed again once their file is no longer open anywhere.
  */
-function collapseThreadsOfClosedFiles() {
-  const open = new Set<string>();
-  for (const group of vscode.window.tabGroups.all) {
-    for (const tab of group.tabs) {
-      const input = tab.input as { uri?: vscode.Uri; original?: vscode.Uri; modified?: vscode.Uri } | undefined;
-      for (const uri of [input?.uri, input?.original, input?.modified]) if (uri) open.add(uri.toString());
-    }
-  }
+function urisOfTab(tab: vscode.Tab): string[] {
+  const input = tab.input as
+    | { uri?: vscode.Uri; original?: vscode.Uri; modified?: vscode.Uri; textDiffs?: { original?: vscode.Uri; modified?: vscode.Uri }[] }
+    | undefined;
+  const list = [input?.uri, input?.original, input?.modified];
+  for (const d of input?.textDiffs ?? []) list.push(d.original, d.modified); // multi-file diff editor
+  return list.filter((u): u is vscode.Uri => !!u).map((u) => u.toString());
+}
+
+/**
+ * Collapse the threads of files that were just closed. Only closed tabs are considered: reacting to
+ * every tab change collapsed the thread being typed in, because a tab kind we do not recognise looks
+ * exactly like a closed file.
+ */
+function collapseThreadsOfClosedTabs(closed: readonly vscode.Tab[]) {
+  if (!closed.length) return;
+  const stillOpen = new Set(vscode.window.tabGroups.all.flatMap((g) => g.tabs.flatMap(urisOfTab)));
+  const gone = new Set(closed.flatMap(urisOfTab).filter((u) => !stillOpen.has(u)));
+  if (!gone.size) return;
   for (const node of storeOwners.values()) {
     for (const thread of node.threads) {
       if (thread.contextValue === 'draft') continue; // a draft you are writing stays as you left it
-      if (!open.has(thread.uri.toString())) thread.collapsibleState = vscode.CommentThreadCollapsibleState.Collapsed;
+      if (gone.has(thread.uri.toString())) thread.collapsibleState = vscode.CommentThreadCollapsibleState.Collapsed;
     }
   }
 }
@@ -1806,6 +1817,7 @@ export function activate(context: vscode.ExtensionContext) {
   drafts = new Drafts(context.workspaceState);
   comments = vscode.comments.createCommentController('crosscut.prComments', 'PR review comments');
   // Allow commenting anywhere in a file that belongs to a pull request row.
+  const rangeCache = new Map<string, vscode.Range[]>();
   comments.commentingRangeProvider = {
     // Only lines the pull request actually changed: GitHub rejects a review comment on any other
     // line, so offering them would produce drafts that can never be staged.
@@ -1813,10 +1825,15 @@ export function activate(context: vscode.ExtensionContext) {
       const owner = ownerOfDocument(document.uri);
       if (!owner?.node.prNumber || !owner.node.diff) return [];
       const { diff } = owner.node;
+      const key = `${document.uri.toString()}#${diff.baseRef}#${diff.headRef ?? ''}`;
+      const cached = rangeCache.get(key);
+      if (cached) return cached;
       const spans = await changedLineRanges(diff.root, diff.baseRef, diff.headRef, owner.rel);
       const wanted = owner.side === 'LEFT' ? spans.left : spans.right;
       const last = Math.max(0, document.lineCount - 1);
-      return wanted.map(([from, to]) => new vscode.Range(Math.min(from - 1, last), 0, Math.min(to - 1, last), 0));
+      const ranges = wanted.map(([from, to]) => new vscode.Range(Math.min(from - 1, last), 0, Math.min(to - 1, last), 0));
+      rangeCache.set(key, ranges);
+      return ranges;
     },
   };
   setGhErrorHandler((m) => {
@@ -1980,6 +1997,35 @@ export function activate(context: vscode.ExtensionContext) {
         'Open PR',
       );
       if (open) await vscode.commands.executeCommand('crosscut.openOnGitHub', n);
+    }),
+    vscode.commands.registerCommand('crosscut.discardPendingReview', async (n: WorktreeNode) => {
+      if (!n.prNumber) return;
+      const id = await vscode.window.withProgress({ location: { viewId: 'crosscut' }, title: 'Checking for a pending review…' }, () =>
+        pendingReviewId(n.wt.path, n.prNumber!),
+      );
+      if (!id) {
+        vscode.window.showInformationMessage(`No pending review of yours on PR #${n.prNumber}.`);
+        return;
+      }
+      const count = await pendingReviewComments(n.wt.path, n.prNumber, id);
+      const ok = await vscode.window.showWarningMessage(
+        `Discard your pending review on PR #${n.prNumber}?`,
+        {
+          modal: true,
+          detail: `${count} unsubmitted comment${count === 1 ? '' : 's'} will be deleted on GitHub. Nobody else has seen them, and they cannot be recovered.`,
+        },
+        'Discard',
+      );
+      if (ok !== 'Discard') return;
+      const result = await deletePendingReview(n.wt.path, n.prNumber, id);
+      if (!result.ok) {
+        log.error(`discarding pending review failed: ${result.message}`);
+        vscode.window.showErrorMessage(`Could not discard the review: ${result.message}`);
+        return;
+      }
+      log.info(`discarded pending review ${id} on PR #${n.prNumber} (${count} comments)`);
+      await provider.reloadComments(n);
+      vscode.window.showInformationMessage(`Discarded your pending review on PR #${n.prNumber}.`);
     }),
     vscode.commands.registerCommand('crosscut.submitReview', async (n: WorktreeNode) => {
       const list = drafts.get(n);
@@ -2281,7 +2327,7 @@ export function activate(context: vscode.ExtensionContext) {
     commentDecoration,
     vscode.window.onDidChangeVisibleTextEditors((editors) => editors.forEach(decorateComments)),
     vscode.window.registerFileDecorationProvider(commentFileDecorations),
-    vscode.window.tabGroups.onDidChangeTabs(() => collapseThreadsOfClosedFiles()),
+    vscode.window.tabGroups.onDidChangeTabs((e) => collapseThreadsOfClosedTabs(e.closed)),
     commentBadges,
     vscode.window.onDidChangeActiveTextEditor(async (e) => {
       // Only offer the button where blame can actually be produced.

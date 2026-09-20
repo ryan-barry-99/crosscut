@@ -317,3 +317,28 @@ export function pendingReviewId(cwd: string, number: number): Promise<number | u
     );
   });
 }
+
+/** Comments waiting in a pending review, so a discard can say what it is about to throw away. */
+export function pendingReviewComments(cwd: string, number: number, reviewId: number): Promise<number> {
+  return new Promise((resolve) => {
+    execFile(
+      'gh',
+      ['api', '--paginate', `repos/{owner}/{repo}/pulls/${number}/reviews/${reviewId}/comments?per_page=100`, '--jq', 'length'],
+      { cwd, timeout: 20000 },
+      (err, stdout) =>
+        resolve(err ? 0 : stdout.split('\n').filter(Boolean).reduce((a, l) => a + (Number(l) || 0), 0)),
+    );
+  });
+}
+
+/** Delete a pending review. Only ever used on your own unsubmitted review, after confirmation. */
+export function deletePendingReview(cwd: string, number: number, reviewId: number): Promise<{ ok: boolean; message: string }> {
+  return new Promise((resolve) => {
+    execFile(
+      'gh',
+      ['api', '--method', 'DELETE', `repos/{owner}/{repo}/pulls/${number}/reviews/${reviewId}`],
+      { cwd, timeout: 20000 },
+      (err, _stdout, stderr) => resolve(err ? { ok: false, message: (stderr || String(err)).split('\n')[0] } : { ok: true, message: 'deleted' }),
+    );
+  });
+}
