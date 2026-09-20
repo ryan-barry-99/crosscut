@@ -1,0 +1,483 @@
+{
+  "name": "worktree-diffs",
+  "displayName": "Worktree Diffs",
+  "description": "See the diffs of every git worktree side by side, with full language support.",
+  "version": "0.1.0",
+  "publisher": "CHANGE-ME",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.86.0"
+  },
+  "categories": [
+    "SCM Providers",
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "workspaceContains:.git",
+    "onView:worktreeDiffs"
+  ],
+  "contributes": {
+    "views": {
+      "scm": [
+        {
+          "id": "worktreeDiffs",
+          "name": "Worktree Diffs"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "worktreeDiffs.refresh",
+        "title": "Refresh Expanded Worktree",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "worktreeDiffs.toggleMode",
+        "title": "Toggle Uncommitted / Branch Diff",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "worktreeDiffs.pickBase",
+        "title": "Compare Against\u2026",
+        "icon": "$(history)"
+      },
+      {
+        "command": "worktreeDiffs.openAll",
+        "title": "Open All Changes",
+        "icon": "$(diff-multiple)"
+      },
+      {
+        "command": "worktreeDiffs.openWorktree",
+        "title": "Open Worktree in New Window",
+        "icon": "$(empty-window)"
+      },
+      {
+        "command": "worktreeDiffs.openDiff",
+        "title": "Open Diff"
+      },
+      {
+        "command": "worktreeDiffs.openFile",
+        "title": "Open File",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "worktreeDiffs.compareWithCurrent",
+        "title": "Compare with This Window's Checkout",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "worktreeDiffs.fetch",
+        "title": "Fetch All Remotes",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "worktreeDiffs.toggleBlame",
+        "title": "Toggle Blame Annotations",
+        "icon": "$(person)",
+        "category": "Worktree Diffs"
+      },
+      {
+        "command": "worktreeDiffs.deleteBranch",
+        "title": "Delete Local Branch\u2026",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "worktreeDiffs.cleanupMerged",
+        "title": "Delete Merged Branches\u2026",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "worktreeDiffs.openCommitTree",
+        "title": "Open Whole Commit",
+        "icon": "$(git-commit)"
+      },
+      {
+        "command": "worktreeDiffs.openPrForCommit",
+        "title": "Open Pull Request for Commit",
+        "icon": "$(git-pull-request)"
+      },
+      {
+        "command": "worktreeDiffs.closeAdHoc",
+        "title": "Close",
+        "icon": "$(close)"
+      },
+      {
+        "command": "worktreeDiffs.openOnGitHub",
+        "title": "Open on GitHub",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "worktreeDiffs.openPrInBrowser",
+        "title": "Open Pull Request on GitHub",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "worktreeDiffs.traceThroughPr",
+        "title": "Find Original Commit Inside the PR",
+        "icon": "$(search)"
+      },
+      {
+        "command": "worktreeDiffs.showReviews",
+        "title": "Show Reviews & Outdated Comments",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "worktreeDiffs.addDraft",
+        "title": "Add draft comment"
+      },
+      {
+        "command": "worktreeDiffs.deleteDraft",
+        "title": "Delete draft",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "worktreeDiffs.stageReview",
+        "title": "Stage Review on GitHub (pending)",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "worktreeDiffs.discardDrafts",
+        "title": "Discard Draft Comments",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "worktreeDiffs.showFileComments",
+        "title": "Show Review Comments",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "worktreeDiffs.cleanPrRefs",
+        "title": "Clean Up Fetched PR Refs",
+        "category": "Worktree Diffs",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "worktreeDiffs.showDescription",
+        "title": "Show Description",
+        "icon": "$(book)"
+      },
+      {
+        "command": "worktreeDiffs.openAuthor",
+        "title": "Open Author on GitHub",
+        "icon": "$(person)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "worktreeDiffs.refresh",
+          "when": "view == worktreeDiffs",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "worktreeDiffs.openAll",
+          "when": "view == worktreeDiffs && viewItem =~ /^(worktree|branch)/",
+          "group": "inline@0"
+        },
+        {
+          "command": "worktreeDiffs.openWorktree",
+          "when": "view == worktreeDiffs && viewItem =~ /^worktree/",
+          "group": "inline@2"
+        },
+        {
+          "command": "worktreeDiffs.openFile",
+          "when": "view == worktreeDiffs && viewItem =~ /^file/",
+          "group": "inline@1"
+        },
+        {
+          "command": "worktreeDiffs.compareWithCurrent",
+          "when": "view == worktreeDiffs && viewItem == file.foreign",
+          "group": "inline@2"
+        },
+        {
+          "command": "worktreeDiffs.openAll",
+          "when": "view == worktreeDiffs && viewItem == group",
+          "group": "inline@0"
+        },
+        {
+          "command": "worktreeDiffs.pickBase",
+          "when": "view == worktreeDiffs && viewItem =~ /^(worktree|branch)/",
+          "group": "inline@1"
+        },
+        {
+          "command": "worktreeDiffs.pickBase",
+          "when": "view == worktreeDiffs && viewItem =~ /^(worktree|branch)/",
+          "group": "1_compare@1"
+        },
+        {
+          "command": "worktreeDiffs.toggleMode",
+          "when": "view == worktreeDiffs && viewItem =~ /^worktree/",
+          "group": "1_compare@2"
+        },
+        {
+          "command": "worktreeDiffs.fetch",
+          "when": "view == worktreeDiffs && viewItem == remotes",
+          "group": "inline@0"
+        },
+        {
+          "command": "worktreeDiffs.deleteBranch",
+          "when": "view == worktreeDiffs && viewItem =~ /^branch\\.gone/",
+          "group": "inline@3"
+        },
+        {
+          "command": "worktreeDiffs.deleteBranch",
+          "when": "view == worktreeDiffs && viewItem =~ /^branch\\.(gone|local)/",
+          "group": "9_danger@1"
+        },
+        {
+          "command": "worktreeDiffs.cleanupMerged",
+          "when": "view == worktreeDiffs && viewItem == locals",
+          "group": "inline@0"
+        },
+        {
+          "command": "worktreeDiffs.openAll",
+          "when": "view == worktreeDiffs && viewItem =~ /^branch\\.adhoc/",
+          "group": "inline@0"
+        },
+        {
+          "command": "worktreeDiffs.openOnGitHub",
+          "when": "view == worktreeDiffs && viewItem =~ /\\.(web|pr)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "worktreeDiffs.closeAdHoc",
+          "when": "view == worktreeDiffs && viewItem =~ /^branch\\.adhoc/",
+          "group": "inline@9"
+        },
+        {
+          "command": "worktreeDiffs.openOnGitHub",
+          "when": "view == worktreeDiffs && viewItem =~ /\\.(web|pr)$/",
+          "group": "2_web@1"
+        },
+        {
+          "command": "worktreeDiffs.showReviews",
+          "when": "view == worktreeDiffs && viewItem =~ /\\.pr$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "worktreeDiffs.stageReview",
+          "when": "view == worktreeDiffs && viewItem =~ /\\.pr$/",
+          "group": "3_review@1"
+        },
+        {
+          "command": "worktreeDiffs.discardDrafts",
+          "when": "view == worktreeDiffs && viewItem =~ /\\.pr$/",
+          "group": "3_review@2"
+        },
+        {
+          "command": "worktreeDiffs.showFileComments",
+          "when": "view == worktreeDiffs && viewItem =~ /\\.commented$/",
+          "group": "inline@0"
+        },
+        {
+          "command": "worktreeDiffs.showDescription",
+          "when": "view == worktreeDiffs && viewItem =~ /^branch/",
+          "group": "inline@0"
+        },
+        {
+          "command": "worktreeDiffs.showDescription",
+          "when": "view == worktreeDiffs && viewItem =~ /^worktree/",
+          "group": "2_web@0"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "worktreeDiffs.toggleMode",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.openWorktree",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.openDiff",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.openFile",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.compareWithCurrent",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.openAll",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.pickBase",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.fetch",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.deleteBranch",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.cleanupMerged",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.openCommitTree",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.openPrForCommit",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.closeAdHoc",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.openOnGitHub",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.openPrInBrowser",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.traceThroughPr",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.showReviews",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.addDraft",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.deleteDraft",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.stageReview",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.discardDrafts",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.showFileComments",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.showDescription",
+          "when": "false"
+        },
+        {
+          "command": "worktreeDiffs.openAuthor",
+          "when": "false"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "worktreeDiffs.toggleBlame",
+          "when": "worktreeDiffs.canBlame",
+          "group": "navigation@9"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "worktreeDiffs.addDraft",
+          "group": "inline",
+          "when": "commentController == worktreeDiffs.prComments"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "worktreeDiffs.deleteDraft",
+          "group": "inline",
+          "when": "commentController == worktreeDiffs.prComments && comment == draft"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Worktree Diffs",
+      "properties": {
+        "worktreeDiffs.baseBranch": {
+          "type": "string",
+          "default": "",
+          "description": "Branch that 'branch' mode diffs against (via merge-base). Empty = auto-detect: main, master, then origin/HEAD."
+        },
+        "worktreeDiffs.defaultMode": {
+          "type": "string",
+          "enum": [
+            "branch",
+            "uncommitted"
+          ],
+          "default": "branch",
+          "description": "Initial diff mode for each worktree. Toggle per worktree from the view."
+        },
+        "worktreeDiffs.blameHover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show git blame for the hovered line (author, date, commit) in editors, including the snapshot files used as the old side of a diff."
+        },
+        "worktreeDiffs.detectStackedBase": {
+          "type": "boolean",
+          "default": true,
+          "description": "Diff a branch against the branch it is stacked on (a branch contained in it but not yet in the base branch), instead of against the base branch."
+        },
+        "worktreeDiffs.showPrComments": {
+          "type": "boolean",
+          "default": true,
+          "description": "Render a pull request's review comments in the diff gutter (needs the GitHub CLI)."
+        },
+        "worktreeDiffs.fetchedPrRefs": {
+          "type": "string",
+          "enum": [
+            "session",
+            "week",
+            "keep"
+          ],
+          "default": "session",
+          "enumDescriptions": [
+            "Drop refs/prs/* fetched for PR views at the start of the next window session.",
+            "Keep them for a week, then drop them.",
+            "Keep them until you clean up manually."
+          ],
+          "description": "What to do with pull-request commits this extension fetches into refs/prs/*. They pin objects in the repository."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "package": "npm run compile && vsce package --allow-missing-repository --skip-license"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.86.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.4.0"
+  },
+  "keywords": [
+    "git",
+    "worktree",
+    "diff",
+    "pull request",
+    "code review",
+    "blame",
+    "submodule"
+  ],
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "bugs": {
+    "url": ""
+  }
+}
