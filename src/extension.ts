@@ -1980,7 +1980,7 @@ export function activate(context: vscode.ExtensionContext) {
       log.info(`staging ${list.length} comment(s) on PR #${n.prNumber}: ${list.map((d) => `${d.path}:${d.startLine ?? d.line}${d.startLine ? `-${d.line}` : ''}`).join(', ')}`);
       const result = await vscode.window.withProgress(
         { location: { viewId: 'crosscut' }, title: 'Staging pending review…' },
-        () => stagePendingReview(n.wt.path, n.prNumber!, body, list.map(({ path, line, side, body }) => ({ path, line, side, body }))),
+        () => stagePendingReview(n.wt.path, n.prNumber!, body, list.map(({ path, line, startLine, side, body }) => ({ path, line, startLine, side, body }))),
       );
       if (!result.ok) {
         log.error(`staging failed: ${result.message}`);
@@ -2040,6 +2040,18 @@ export function activate(context: vscode.ExtensionContext) {
         { title: `Submit a review on PR #${n.prNumber}${list.length ? ` with ${list.length} comment${list.length === 1 ? '' : 's'}` : ''}` },
       );
       if (!verdict) return;
+      // Same constraint as staging: one pending review per person per PR, and a submit POST is
+      // rejected just as flatly while one is open.
+      const pending = await pendingReviewId(n.wt.path, n.prNumber);
+      if (pending) {
+        const go = await vscode.window.showWarningMessage(
+          `You already have a pending review on PR #${n.prNumber}.`,
+          { modal: true, detail: 'GitHub rejects a new review while one is pending. Submit or discard that one on GitHub first.' },
+          'Open PR',
+        );
+        if (go) await vscode.commands.executeCommand('crosscut.openOnGitHub', n);
+        return;
+      }
       const body = await vscode.window.showInputBox({
         title: `Summary for your ${verdict.event.toLowerCase().replace('_', ' ')} review on PR #${n.prNumber}`,
         prompt: 'Shown at the top of the review. Submitted together with the comments.',
