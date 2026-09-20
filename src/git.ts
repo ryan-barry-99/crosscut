@@ -302,6 +302,30 @@ export async function loadDiff(root: string, baseRef: string): Promise<RepoDiff>
   return { root, baseRef, changes };
 }
 
+/** Line ranges of a file that a diff actually touches — GitHub only accepts comments on those. */
+export async function changedLineRanges(
+  root: string,
+  base: string,
+  head: string | undefined,
+  rel: string,
+): Promise<{ left: [number, number][]; right: [number, number][] }> {
+  const args = ['diff', '-U0', '--no-color', base, ...(head ? [head] : []), '--', rel];
+  const out = await git(root, args).catch(() => '');
+  const left: [number, number][] = [];
+  const right: [number, number][] = [];
+  for (const line of out.split('\n')) {
+    const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!m) continue;
+    const oldStart = Number(m[1]);
+    const oldCount = m[2] === undefined ? 1 : Number(m[2]);
+    const newStart = Number(m[3]);
+    const newCount = m[4] === undefined ? 1 : Number(m[4]);
+    if (oldCount) left.push([oldStart, oldStart + oldCount - 1]);
+    if (newCount) right.push([newStart, newStart + newCount - 1]);
+  }
+  return { left, right };
+}
+
 /** Contents of many `<ref>:<path>` blobs in one `git cat-file --batch` process. Missing ones are omitted. */
 export function catFileBatch(cwd: string, specs: string[]): Promise<Map<string, Buffer>> {
   // Newlines in paths would break the batch protocol; those fall back to `git show` on demand.

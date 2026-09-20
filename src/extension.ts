@@ -3,7 +3,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { BlameLine, blameFile } from './blame';
-import { DraftComment, PrDetails, PrInfo, ReviewComment, ReviewSummary, commitAuthorLogin, RefTitle, refTitles, prComments, prDetails, prForCommit, prReviews, prsByBranch, repoUrl, setGhErrorHandler, stagePendingReview } from './gh';
+import { DraftComment, PrDetails, PrInfo, ReviewComment, ReviewSummary, commitAuthorLogin, RefTitle, refTitles, prComments, prDetails, prForCommit, prReviews, prsByBranch, repoUrl, setGhErrorHandler, stagePendingReview, pendingReviewId } from './gh';
 import {
   Change,
   Worktree,
@@ -19,6 +19,7 @@ import {
   hasRef,
   fetchPullRef,
   listRefs,
+  changedLineRanges,
   deleteRef,
   deleteBranch,
   BranchRef,
@@ -196,6 +197,7 @@ class WorktreeNode {
   prNumber?: number; // when this row is a pull request (or a branch with one)
   commentCounts = new Map<string, number>(); // changed path -> inline review comments on it
   threads: vscode.CommentThread[] = [];
+  threadSignature?: string; // what the rendered threads were built from
   reviews: ReviewSummary[] = [];
   inlineComments: ReviewComment[] = [];
   details?: PrDetails; // the pull request's own description
@@ -326,6 +328,11 @@ function ownerOfDocument(uri: vscode.Uri): { node: WorktreeNode; rel: string; si
 
 function threadsFor(node: WorktreeNode, all: ReviewComment[]) {
   if (!comments) return;
+  // Rebuilding disposes every thread, which also closes a comment box the user is typing in — so
+  // only rebuild when the comments or drafts actually differ from what is on screen.
+  const signature = JSON.stringify([all, drafts.get(node), node.diff?.headRef, node.diff?.baseRef]);
+  if (signature === node.threadSignature) return;
+  node.threadSignature = signature;
   log.info(`comments for PR #${node.prNumber}: ${all.length} inline, headRef ${node.diff?.headRef?.slice(0, 8) ?? '(none)'}`);
   node.threads.forEach((t) => t.dispose());
   node.threads = [];
@@ -349,9 +356,10 @@ function threadsFor(node: WorktreeNode, all: ReviewComment[]) {
     const ref = side === 'LEFT' ? node.diff.baseRef : node.diff.headRef;
     const file = path.join(snapshotDir(node.store, node.diff, ref), first.path);
     const line = Math.max(0, Number(lineText) - 1);
+    const from = Math.max(0, (first.startLine ?? Number(lineText)) - 1);
     const thread = comments.createCommentThread(
       vscode.Uri.file(file),
-      new vscode.Range(line, 0, line, 0),
+      new vscode.Range(Math.min(from, line), 0, line, 0),
       group
         .sort((a, b) => a.id - b.id)
         .map((c) => ({
@@ -373,9 +381,10 @@ function threadsFor(node: WorktreeNode, all: ReviewComment[]) {
   for (const d of drafts.get(node)) {
     const ref = d.side === 'LEFT' ? node.diff.baseRef : node.diff.headRef;
     const line = Math.max(0, d.line - 1);
+    const from = Math.max(0, (d.startLine ?? d.line) - 1);
     const thread = comments.createCommentThread(
       vscode.Uri.file(path.join(snapshotDir(node.store, node.diff, ref), d.path)),
-      new vscode.Range(line, 0, line, 0),
+      new vscode.Range(Math.min(from, line), 0, line, 0),
       [
         {
           body: new vscode.MarkdownString(d.body),
@@ -633,6 +642,45 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     this.emitter.fire(undefined);
   }
 
+  /**
+   * Link every worktree and branch row to its pull request in one lookup per repo, so the
+   * PR-only actions are offered without having to expand a row first.
+   */
+  private async linkPrs() {
+    if (!vscode.workspace.getConfiguration('crosscut').get<boolean>('showPrComments', true)) return;
+    for (const repo of this.repos) {
+      const main = repo.worktrees[0]?.wt.path;
+      if (!main) continue;
+      const prs = await this.prsFor(main);
+      if (!prs.size) continue;
+      let linked = 0;
+      for (const node of [...repo.worktrees, ...repo.groups.flatMap((g) => g.branches)]) {
+        if (node.prNumber) continue;
+        const branch = node.ref ? (node.ref.ref.startsWith('adhoc/') ? undefined : branchNameOf(node.ref)) : node.wt.branch;
+        const pr = branch && prs.get(branch);
+        if (!pr) continue;
+        node.prNumber = pr.number;
+        node.webUrl ??= pr.url;
+        linked++;
+      }
+      if (linked) {
+        log.info(`linked ${linked} rows to pull requests`);
+        this.emitter.fire(undefined);
+      }
+    }
+  }
+
+  /** The pull request a row belongs to, looking it up if this row has not been linked yet. */
+  async prOf(node: WorktreeNode): Promise<number | undefined> {
+    if (node.prNumber) return node.prNumber;
+    const branch = node.ref ? (node.ref.ref.startsWith('adhoc/') ? undefined : branchNameOf(node.ref)) : node.wt.branch;
+    if (!branch) return undefined;
+    const pr = (await this.prsFor(node.wt.path)).get(branch);
+    node.prNumber = pr?.number;
+    node.webUrl ??= pr?.url;
+    return node.prNumber;
+  }
+
   /** Main checkout of every repo in the window. */
   repoPaths(): string[] {
     return this.repos.map((r) => r.worktrees[0]?.wt.path).filter(Boolean);
@@ -648,10 +696,11 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   private async loadComments(node: WorktreeNode) {
     if (!vscode.workspace.getConfiguration('crosscut').get<boolean>('showPrComments', true)) return;
     const main = node.wt.path;
-    if (node.prNumber === undefined && node.ref && !node.ref.ref.startsWith('adhoc/')) {
-      const prs = await this.prsFor(main);
-      const pr = prs.get(branchNameOf(node.ref));
-      node.prNumber = pr?.number;
+    // A worktree row has a branch too, so it can be linked to its pull request just like a branch row.
+    const branch = node.ref ? (node.ref.ref.startsWith('adhoc/') ? undefined : branchNameOf(node.ref)) : node.wt.branch;
+    if (node.prNumber === undefined && branch) {
+      const pr = (await this.prsFor(main)).get(branch);
+      node.prNumber = pr?.state === 'OPEN' || pr?.state === 'MERGED' ? pr.number : pr?.number;
       node.webUrl ??= pr?.url;
     }
     if (!node.prNumber) return;
@@ -772,6 +821,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     // in the background; the tree shows the cached result meanwhile.
     // Branch rows only re-diff when expanded (there can be hundreds).
     for (const node of [...created, ...moved]) if (!node.ref || node === this.expanded) this.enqueue(node);
+    void this.linkPrs();
   }
 
   async onExpand(node: Node, view: vscode.TreeView<Node>) {
@@ -865,6 +915,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     node.baseLabel = baseLabel;
     node.error = error;
     node.tree = buildFileTree(node, diff, node);
+    node.threadSignature = undefined; // snapshot paths changed, so threads must be rebuilt
     storeOwners.set(node.store, node);
     snapshot(node.store, diff);
     void this.loadComments(node);
@@ -1019,7 +1070,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       // a GitHub page to open at all (an unpushed local branch has neither).
       const kind = b.ref.startsWith('adhoc/') ? 'branch.adhoc' : b.remote ? 'branch' : b.track === 'gone' ? 'branch.gone' : 'branch.local';
       const hasWeb = node.webUrl || node.prNumber || b.remote || (b.upstream && b.track !== 'gone'); // a gone upstream 404s
-      item.contextValue = `${kind}${hasWeb ? '.web' : ''}${node.prNumber ? '.pr' : ''}`;
+      item.contextValue = `${kind}${hasWeb ? '.web' : ''}${node.prNumber ? '.pr' : ''}${drafts.get(node).length ? '.drafts' : ''}`;
       item.id = `b:${node.key}`;
       return item;
     }
@@ -1051,7 +1102,8 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       item.iconPath = new vscode.ThemeIcon(
         node.error ? 'warning' : node.isCurrent ? 'pass-filled' : wt.isMain ? 'home' : 'git-branch',
       );
-      item.contextValue = node.prNumber ? 'worktree.pr' : wt.branch ? 'worktree.web' : 'worktree';
+      item.contextValue =
+        (node.prNumber ? 'worktree.pr' : wt.branch ? 'worktree.web' : 'worktree') + (drafts.get(node).length ? '.drafts' : '');
       item.id = `wt:${wt.path}`;
       return item;
     }
@@ -1580,7 +1632,8 @@ function decorateComments(editor: vscode.TextEditor) {
     if (i < 0) continue;
     const first = list[0];
     const more = list.length > 1 ? ` (+${list.length - 1} more)` : '';
-    const text = `💬 ${first.author}: ${first.body.replace(/\s+/g, ' ').slice(0, 80)}${first.body.length > 80 ? '…' : ''}${more}`;
+    const span = first.startLine && first.startLine !== first.line ? ` (lines ${first.startLine}–${first.line})` : '';
+    const text = `💬 ${first.author}${span}: ${first.body.replace(/\s+/g, ' ').slice(0, 80)}${first.body.length > 80 ? '…' : ''}${more}`;
     const hover = new vscode.MarkdownString(
       list.map((c) => `**${c.author}** · ${new Date(c.when).toLocaleString()}\n\n${c.body}`).join('\n\n---\n\n'),
     );
@@ -1754,9 +1807,16 @@ export function activate(context: vscode.ExtensionContext) {
   comments = vscode.comments.createCommentController('crosscut.prComments', 'PR review comments');
   // Allow commenting anywhere in a file that belongs to a pull request row.
   comments.commentingRangeProvider = {
-    provideCommentingRanges(document) {
+    // Only lines the pull request actually changed: GitHub rejects a review comment on any other
+    // line, so offering them would produce drafts that can never be staged.
+    async provideCommentingRanges(document) {
       const owner = ownerOfDocument(document.uri);
-      return owner?.node.prNumber ? [new vscode.Range(0, 0, Math.max(0, document.lineCount - 1), 0)] : [];
+      if (!owner?.node.prNumber || !owner.node.diff) return [];
+      const { diff } = owner.node;
+      const spans = await changedLineRanges(diff.root, diff.baseRef, diff.headRef, owner.rel);
+      const wanted = owner.side === 'LEFT' ? spans.left : spans.right;
+      const last = Math.max(0, document.lineCount - 1);
+      return wanted.map(([from, to]) => new vscode.Range(Math.min(from - 1, last), 0, Math.min(to - 1, last), 0));
     },
   };
   setGhErrorHandler((m) => {
@@ -1822,7 +1882,7 @@ export function activate(context: vscode.ExtensionContext) {
       const list = n.owner.inlineComments.filter((c) => c.path === n.change.path);
       if (!list.length) return;
       const items = list.map((c) => ({
-        label: `${c.line ? `Line ${c.line}` : 'Outdated'} · ${c.author}`,
+        label: `${c.line ? (c.startLine && c.startLine !== c.line ? `Lines ${c.startLine}–${c.line}` : `Line ${c.line}`) : 'Outdated'} · ${c.author}`,
         detail: c.body.replace(/\s+/g, ' ').slice(0, 300),
         comment: c,
       }));
@@ -1845,7 +1905,17 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('crosscut.addDraft', async (reply: vscode.CommentReply) => {
       const owner = ownerOfDocument(reply.thread.uri);
       if (!owner?.node.prNumber || !reply.text.trim()) return;
-      await drafts.add(owner.node, { path: owner.rel, line: (reply.thread.range?.start.line ?? 0) + 1, side: owner.side, body: reply.text });
+      // A selection spanning several lines becomes a span comment, as on GitHub.
+      const range = reply.thread.range;
+      const startLine = (range?.start.line ?? 0) + 1;
+      const line = (range?.end.line ?? range?.start.line ?? 0) + 1;
+      await drafts.add(owner.node, {
+        path: owner.rel,
+        line,
+        ...(line > startLine ? { startLine } : {}),
+        side: owner.side,
+        body: reply.text,
+      });
       reply.thread.dispose();
       await provider.reloadComments(owner.node);
       vscode.window.showInformationMessage(
@@ -1866,19 +1936,35 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('No draft comments to stage on this pull request.');
         return;
       }
+      // GitHub allows one pending review per person per PR; a second POST is rejected outright.
+      const existing = await pendingReviewId(n.wt.path, n.prNumber);
+      if (existing) {
+        const go = await vscode.window.showWarningMessage(
+          `You already have a pending review on PR #${n.prNumber}.`,
+          { modal: true, detail: 'GitHub allows only one at a time. Submit or discard that one on GitHub, then stage these drafts.' },
+          'Open PR',
+        );
+        if (go) await vscode.commands.executeCommand('crosscut.openOnGitHub', n);
+        return;
+      }
       const body = await vscode.window.showInputBox({
         title: `Stage ${list.length} comment${list.length === 1 ? '' : 's'} on PR #${n.prNumber}`,
         prompt: 'Optional summary for the review (it stays pending until you submit it on GitHub)',
       });
       if (body === undefined) return;
+      log.info(`staging ${list.length} comment(s) on PR #${n.prNumber}: ${list.map((d) => `${d.path}:${d.startLine ?? d.line}${d.startLine ? `-${d.line}` : ''}`).join(', ')}`);
       const result = await vscode.window.withProgress(
         { location: { viewId: 'crosscut' }, title: 'Staging pending review…' },
         () => stagePendingReview(n.wt.path, n.prNumber!, body, list.map(({ path, line, side, body }) => ({ path, line, side, body }))),
       );
       if (!result.ok) {
-        vscode.window.showErrorMessage(`Could not stage the review: ${result.message}`);
+        log.error(`staging failed: ${result.message}`);
+        vscode.window
+          .showErrorMessage(`Could not stage the review: ${result.message}`, 'Show log')
+          .then((a) => a && log.show());
         return;
       }
+      log.info(`staged: ${result.message}`);
       await drafts.set(n, []);
       await provider.reloadComments(n);
       const open = await vscode.window.showInformationMessage(
@@ -2002,6 +2088,41 @@ export function activate(context: vscode.ExtensionContext) {
       if (ok !== 'Delete') return;
       for (const f of found) await deleteRef(f.repo, f.ref).catch(() => undefined);
       vscode.window.showInformationMessage(`Deleted ${found.length} fetched PR ref${found.length === 1 ? '' : 's'}.`);
+    }),
+    vscode.commands.registerCommand('crosscut.openAsPr', async (n: WorktreeNode) => {
+      const main = (await repoMainPath(n.wt.path)) ?? n.wt.path;
+      const number = await vscode.window.withProgress({ location: { viewId: 'crosscut' }, title: 'Finding pull request…' }, () =>
+        provider.prOf(n),
+      );
+      if (!number) {
+        vscode.window.showInformationMessage(lastGhError ?? 'No pull request found for this branch.');
+        return;
+      }
+      const d = await prDetails(main, number);
+      if (!d) return;
+      // The PR's head as GitHub has it, which is not necessarily what this worktree holds.
+      let head = await git(main, ['rev-parse', '--verify', `refs/remotes/origin/${d.headRef}`]).then((o) => o.trim()).catch(() => '');
+      if (!head) {
+        const ok = await vscode.window.showInformationMessage(
+          `Fetch the commits of PR #${number}?`,
+          { modal: true, detail: `origin/${d.headRef} is not in this clone.` },
+          'Fetch',
+        );
+        if (ok !== 'Fetch') return;
+        const ref = await fetchPullRef(main, number).catch(() => undefined);
+        if (!ref) return;
+        fetchedAt.set(`${main}\0${ref}`, Date.now());
+        head = await git(main, ['rev-parse', '--verify', ref]).then((o) => o.trim()).catch(() => '');
+      }
+      if (!head) return;
+      const base = (await mergeBase(main, d.baseRef, head)) ?? `${head}^`;
+      const when = (await git(main, ['show', '-s', '--format=%cr', head]).catch(() => '')).trim();
+      await provider.openAdHoc(
+        main,
+        { id: `pr-${number}`, label: `PR #${number} ${d.title}`, sha: head, base, when, author: `into ${d.baseRef}` },
+        view,
+        d.url,
+      );
     }),
     vscode.commands.registerCommand('crosscut.closeAdHoc', (n: WorktreeNode) => provider.closeAdHoc(n)),
     vscode.commands.registerCommand('crosscut.openOnGitHub', async (n: WorktreeNode) => {

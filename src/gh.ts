@@ -101,7 +101,8 @@ export function repoUrl(cwd: string): Promise<string | undefined> {
 export interface ReviewComment {
   id: number;
   path: string;
-  line?: number; // line in the head version; absent when the comment is outdated
+  line?: number; // last line of the comment's range in the head version; absent when outdated
+  startLine?: number; // first line, when the comment covers a span
   side: 'LEFT' | 'RIGHT';
   body: string;
   author: string;
@@ -146,7 +147,7 @@ export function prComments(cwd: string, number: number): Promise<ReviewComment[]
     '--paginate',
     `repos/{owner}/{repo}/pulls/${number}/comments?per_page=100`,
     '--jq',
-    '.[] | {id, path, line, side, body, author: .user.login, when: .created_at, url: .html_url, inReplyTo: .in_reply_to_id}',
+    '.[] | {id, path, line, startLine: .start_line, side, body, author: .user.login, when: .created_at, url: .html_url, inReplyTo: .in_reply_to_id}',
   ]);
 }
 
@@ -163,7 +164,8 @@ export function prReviews(cwd: string, number: number): Promise<ReviewSummary[]>
 
 export interface DraftComment {
   path: string;
-  line: number;
+  line: number; // last line of the range
+  startLine?: number; // first line, when the comment covers more than one line
   side: 'LEFT' | 'RIGHT';
   body: string;
 }
@@ -174,7 +176,15 @@ export interface DraftComment {
  * (COMMENT/APPROVE/REQUEST_CHANGES) would publish the review immediately.
  */
 export function stagePendingReview(cwd: string, number: number, body: string, comments: DraftComment[]): Promise<{ ok: boolean; message: string }> {
-  const payload = JSON.stringify({ body, comments });
+  // GitHub takes a span as start_line..line; start_side must accompany start_line.
+  const payload = JSON.stringify({
+    body,
+    comments: comments.map((c) =>
+      c.startLine && c.startLine !== c.line
+        ? { path: c.path, body: c.body, side: c.side, line: c.line, start_line: c.startLine, start_side: c.side }
+        : { path: c.path, body: c.body, side: c.side, line: c.line },
+    ),
+  });
   return new Promise((resolve) => {
     const proc = spawn('gh', ['api', '--method', 'POST', `repos/{owner}/{repo}/pulls/${number}/reviews`, '--input', '-'], { cwd });
     let out = '';
@@ -183,13 +193,20 @@ export function stagePendingReview(cwd: string, number: number, body: string, co
     proc.stderr.on('data', (c: Buffer) => (err += c.toString('utf8')));
     proc.on('error', (e) => resolve({ ok: false, message: String(e) }));
     proc.on('close', (code) => {
+      clearTimeout(guard);
       if (code === 0) {
         const id = /"id":\s*(\d+)/.exec(out)?.[1];
         resolve({ ok: true, message: id ? `pending review ${id}` : 'pending review created' });
       } else {
-        resolve({ ok: false, message: (err || out).split('\n').filter(Boolean).slice(0, 2).join(' ') });
+        resolve({ ok: false, message: (err || out).split('\n').filter(Boolean).slice(0, 2).join(' ') || `gh exited ${code}` });
       }
     });
+    // `gh api --input -` reads the payload from stdin and waits for EOF before sending anything.
+    proc.stdin.end(payload);
+    const guard = setTimeout(() => {
+      proc.kill();
+      resolve({ ok: false, message: 'timed out talking to GitHub' });
+    }, 60000);
   });
 }
 
@@ -280,4 +297,16 @@ export async function refTitles(cwd: string, numbers: number[], repo?: string): 
     ),
   );
   return new Map(results.filter((r): r is RefTitle => !!r).map((r) => [r.number, r]));
+}
+
+/** The id of your own pending (unsubmitted) review on a PR, if you already have one. */
+export function pendingReviewId(cwd: string, number: number): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    execFile(
+      'gh',
+      ['api', `repos/{owner}/{repo}/pulls/${number}/reviews`, '--jq', 'map(select(.state == "PENDING")) | .[0].id // empty'],
+      { cwd, timeout: 20000 },
+      (err, stdout) => resolve(err || !stdout.trim() ? undefined : Number(stdout.trim())),
+    );
+  });
 }

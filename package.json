@@ -161,6 +161,11 @@
         "command": "crosscut.openAuthor",
         "title": "Open Author on GitHub",
         "icon": "$(person)"
+      },
+      {
+        "command": "crosscut.openAsPr",
+        "title": "Open as Pull Request",
+        "icon": "$(git-pull-request)"
       }
     ],
     "menus": {
@@ -239,7 +244,7 @@
         },
         {
           "command": "crosscut.openOnGitHub",
-          "when": "view == crosscut && viewItem =~ /\\.(web|pr)$/",
+          "when": "view == crosscut && viewItem =~ /\\.(web|pr)(\\.drafts)?$/",
           "group": "inline@2"
         },
         {
@@ -249,22 +254,22 @@
         },
         {
           "command": "crosscut.openOnGitHub",
-          "when": "view == crosscut && viewItem =~ /\\.(web|pr)$/",
+          "when": "view == crosscut && viewItem =~ /\\.(web|pr)(\\.drafts)?$/",
           "group": "2_web@1"
         },
         {
           "command": "crosscut.showReviews",
-          "when": "view == crosscut && viewItem =~ /\\.pr$/",
+          "when": "view == crosscut && viewItem =~ /\\.pr(\\.drafts)?$/",
           "group": "inline@1"
         },
         {
           "command": "crosscut.stageReview",
-          "when": "view == crosscut && viewItem =~ /\\.pr$/",
+          "when": "view == crosscut && viewItem =~ /\\.drafts$/",
           "group": "3_review@1"
         },
         {
           "command": "crosscut.discardDrafts",
-          "when": "view == crosscut && viewItem =~ /\\.pr$/",
+          "when": "view == crosscut && viewItem =~ /\\.drafts$/",
           "group": "3_review@2"
         },
         {
@@ -281,6 +286,21 @@
           "command": "crosscut.showDescription",
           "when": "view == crosscut && viewItem =~ /^worktree/",
           "group": "2_web@0"
+        },
+        {
+          "command": "crosscut.openAsPr",
+          "when": "view == crosscut && viewItem =~ /\\.pr(\\.drafts)?$/ && viewItem =~ /^(worktree|branch)/",
+          "group": "inline@1"
+        },
+        {
+          "command": "crosscut.openAsPr",
+          "when": "view == crosscut && viewItem =~ /^(worktree|branch)/",
+          "group": "1_compare@0"
+        },
+        {
+          "command": "crosscut.stageReview",
+          "when": "view == crosscut && viewItem =~ /\\.drafts$/",
+          "group": "inline@1"
         }
       ],
       "commandPalette": [
@@ -378,6 +398,10 @@
         },
         {
           "command": "crosscut.openAuthor",
+          "when": "false"
+        },
+        {
+          "command": "crosscut.openAsPr",
           "when": "false"
         }
       ],
