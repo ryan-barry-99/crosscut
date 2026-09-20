@@ -1,7 +1,7 @@
 {
-  "name": "worktree-diffs",
-  "displayName": "Worktree Diffs",
-  "description": "See the diffs of every git worktree side by side, with full language support.",
+  "name": "crosscut",
+  "displayName": "Crosscut",
+  "description": "Diffs across every git worktree, branch and pull request \u2014 with IntelliSense, blame and review comments.",
   "version": "0.1.0",
   "publisher": "ryan-barry-99",
   "license": "MIT",
@@ -15,150 +15,150 @@
   "main": "./out/extension.js",
   "activationEvents": [
     "workspaceContains:.git",
-    "onView:worktreeDiffs"
+    "onView:crosscut"
   ],
   "contributes": {
     "views": {
       "scm": [
         {
-          "id": "worktreeDiffs",
-          "name": "Worktree Diffs"
+          "id": "crosscut",
+          "name": "Crosscut"
         }
       ]
     },
     "commands": [
       {
-        "command": "worktreeDiffs.refresh",
+        "command": "crosscut.refresh",
         "title": "Refresh Expanded Worktree",
         "icon": "$(refresh)"
       },
       {
-        "command": "worktreeDiffs.toggleMode",
+        "command": "crosscut.toggleMode",
         "title": "Toggle Uncommitted / Branch Diff",
         "icon": "$(git-compare)"
       },
       {
-        "command": "worktreeDiffs.pickBase",
+        "command": "crosscut.pickBase",
         "title": "Compare Against\u2026",
         "icon": "$(history)"
       },
       {
-        "command": "worktreeDiffs.openAll",
+        "command": "crosscut.openAll",
         "title": "Open All Changes",
         "icon": "$(diff-multiple)"
       },
       {
-        "command": "worktreeDiffs.openWorktree",
+        "command": "crosscut.openWorktree",
         "title": "Open Worktree in New Window",
         "icon": "$(empty-window)"
       },
       {
-        "command": "worktreeDiffs.openDiff",
+        "command": "crosscut.openDiff",
         "title": "Open Diff"
       },
       {
-        "command": "worktreeDiffs.openFile",
+        "command": "crosscut.openFile",
         "title": "Open File",
         "icon": "$(go-to-file)"
       },
       {
-        "command": "worktreeDiffs.compareWithCurrent",
+        "command": "crosscut.compareWithCurrent",
         "title": "Compare with This Window's Checkout",
         "icon": "$(diff)"
       },
       {
-        "command": "worktreeDiffs.fetch",
+        "command": "crosscut.fetch",
         "title": "Fetch All Remotes",
         "icon": "$(cloud-download)"
       },
       {
-        "command": "worktreeDiffs.toggleBlame",
+        "command": "crosscut.toggleBlame",
         "title": "Toggle Blame Annotations",
         "icon": "$(person)",
-        "category": "Worktree Diffs"
+        "category": "Crosscut"
       },
       {
-        "command": "worktreeDiffs.deleteBranch",
+        "command": "crosscut.deleteBranch",
         "title": "Delete Local Branch\u2026",
         "icon": "$(trash)"
       },
       {
-        "command": "worktreeDiffs.cleanupMerged",
+        "command": "crosscut.cleanupMerged",
         "title": "Delete Merged Branches\u2026",
         "icon": "$(trash)"
       },
       {
-        "command": "worktreeDiffs.openCommitTree",
+        "command": "crosscut.openCommitTree",
         "title": "Open Whole Commit",
         "icon": "$(git-commit)"
       },
       {
-        "command": "worktreeDiffs.openPrForCommit",
+        "command": "crosscut.openPrForCommit",
         "title": "Open Pull Request for Commit",
         "icon": "$(git-pull-request)"
       },
       {
-        "command": "worktreeDiffs.closeAdHoc",
+        "command": "crosscut.closeAdHoc",
         "title": "Close",
         "icon": "$(close)"
       },
       {
-        "command": "worktreeDiffs.openOnGitHub",
+        "command": "crosscut.openOnGitHub",
         "title": "Open on GitHub",
         "icon": "$(globe)"
       },
       {
-        "command": "worktreeDiffs.openPrInBrowser",
+        "command": "crosscut.openPrInBrowser",
         "title": "Open Pull Request on GitHub",
         "icon": "$(globe)"
       },
       {
-        "command": "worktreeDiffs.traceThroughPr",
+        "command": "crosscut.traceThroughPr",
         "title": "Find Original Commit Inside the PR",
         "icon": "$(search)"
       },
       {
-        "command": "worktreeDiffs.showReviews",
+        "command": "crosscut.showReviews",
         "title": "Show Reviews & Outdated Comments",
         "icon": "$(comment-discussion)"
       },
       {
-        "command": "worktreeDiffs.addDraft",
+        "command": "crosscut.addDraft",
         "title": "Add draft comment"
       },
       {
-        "command": "worktreeDiffs.deleteDraft",
+        "command": "crosscut.deleteDraft",
         "title": "Delete draft",
         "icon": "$(trash)"
       },
       {
-        "command": "worktreeDiffs.stageReview",
+        "command": "crosscut.stageReview",
         "title": "Stage Review on GitHub (pending)",
         "icon": "$(cloud-upload)"
       },
       {
-        "command": "worktreeDiffs.discardDrafts",
+        "command": "crosscut.discardDrafts",
         "title": "Discard Draft Comments",
         "icon": "$(trash)"
       },
       {
-        "command": "worktreeDiffs.showFileComments",
+        "command": "crosscut.showFileComments",
         "title": "Show Review Comments",
         "icon": "$(comment-discussion)"
       },
       {
-        "command": "worktreeDiffs.cleanPrRefs",
+        "command": "crosscut.cleanPrRefs",
         "title": "Clean Up Fetched PR Refs",
-        "category": "Worktree Diffs",
+        "category": "Crosscut",
         "icon": "$(trash)"
       },
       {
-        "command": "worktreeDiffs.showDescription",
+        "command": "crosscut.showDescription",
         "title": "Show Description",
         "icon": "$(book)"
       },
       {
-        "command": "worktreeDiffs.openAuthor",
+        "command": "crosscut.openAuthor",
         "title": "Open Author on GitHub",
         "icon": "$(person)"
       }
@@ -166,252 +166,252 @@
     "menus": {
       "view/title": [
         {
-          "command": "worktreeDiffs.refresh",
-          "when": "view == worktreeDiffs",
+          "command": "crosscut.refresh",
+          "when": "view == crosscut",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
-          "command": "worktreeDiffs.openAll",
-          "when": "view == worktreeDiffs && viewItem =~ /^(worktree|branch)/",
+          "command": "crosscut.openAll",
+          "when": "view == crosscut && viewItem =~ /^(worktree|branch)/",
           "group": "inline@0"
         },
         {
-          "command": "worktreeDiffs.openWorktree",
-          "when": "view == worktreeDiffs && viewItem =~ /^worktree/",
+          "command": "crosscut.openWorktree",
+          "when": "view == crosscut && viewItem =~ /^worktree/",
           "group": "inline@2"
         },
         {
-          "command": "worktreeDiffs.openFile",
-          "when": "view == worktreeDiffs && viewItem =~ /^file/",
+          "command": "crosscut.openFile",
+          "when": "view == crosscut && viewItem =~ /^file/",
           "group": "inline@1"
         },
         {
-          "command": "worktreeDiffs.compareWithCurrent",
-          "when": "view == worktreeDiffs && viewItem == file.foreign",
+          "command": "crosscut.compareWithCurrent",
+          "when": "view == crosscut && viewItem == file.foreign",
           "group": "inline@2"
         },
         {
-          "command": "worktreeDiffs.openAll",
-          "when": "view == worktreeDiffs && viewItem == group",
+          "command": "crosscut.openAll",
+          "when": "view == crosscut && viewItem == group",
           "group": "inline@0"
         },
         {
-          "command": "worktreeDiffs.pickBase",
-          "when": "view == worktreeDiffs && viewItem =~ /^(worktree|branch)/",
+          "command": "crosscut.pickBase",
+          "when": "view == crosscut && viewItem =~ /^(worktree|branch)/",
           "group": "inline@1"
         },
         {
-          "command": "worktreeDiffs.pickBase",
-          "when": "view == worktreeDiffs && viewItem =~ /^(worktree|branch)/",
+          "command": "crosscut.pickBase",
+          "when": "view == crosscut && viewItem =~ /^(worktree|branch)/",
           "group": "1_compare@1"
         },
         {
-          "command": "worktreeDiffs.toggleMode",
-          "when": "view == worktreeDiffs && viewItem =~ /^worktree/",
+          "command": "crosscut.toggleMode",
+          "when": "view == crosscut && viewItem =~ /^worktree/",
           "group": "1_compare@2"
         },
         {
-          "command": "worktreeDiffs.fetch",
-          "when": "view == worktreeDiffs && viewItem == remotes",
+          "command": "crosscut.fetch",
+          "when": "view == crosscut && viewItem == remotes",
           "group": "inline@0"
         },
         {
-          "command": "worktreeDiffs.deleteBranch",
-          "when": "view == worktreeDiffs && viewItem =~ /^branch\\.gone/",
+          "command": "crosscut.deleteBranch",
+          "when": "view == crosscut && viewItem =~ /^branch\\.gone/",
           "group": "inline@3"
         },
         {
-          "command": "worktreeDiffs.deleteBranch",
-          "when": "view == worktreeDiffs && viewItem =~ /^branch\\.(gone|local)/",
+          "command": "crosscut.deleteBranch",
+          "when": "view == crosscut && viewItem =~ /^branch\\.(gone|local)/",
           "group": "9_danger@1"
         },
         {
-          "command": "worktreeDiffs.cleanupMerged",
-          "when": "view == worktreeDiffs && viewItem == locals",
+          "command": "crosscut.cleanupMerged",
+          "when": "view == crosscut && viewItem == locals",
           "group": "inline@0"
         },
         {
-          "command": "worktreeDiffs.openAll",
-          "when": "view == worktreeDiffs && viewItem =~ /^branch\\.adhoc/",
+          "command": "crosscut.openAll",
+          "when": "view == crosscut && viewItem =~ /^branch\\.adhoc/",
           "group": "inline@0"
         },
         {
-          "command": "worktreeDiffs.openOnGitHub",
-          "when": "view == worktreeDiffs && viewItem =~ /\\.(web|pr)$/",
+          "command": "crosscut.openOnGitHub",
+          "when": "view == crosscut && viewItem =~ /\\.(web|pr)$/",
           "group": "inline@2"
         },
         {
-          "command": "worktreeDiffs.closeAdHoc",
-          "when": "view == worktreeDiffs && viewItem =~ /^branch\\.adhoc/",
+          "command": "crosscut.closeAdHoc",
+          "when": "view == crosscut && viewItem =~ /^branch\\.adhoc/",
           "group": "inline@9"
         },
         {
-          "command": "worktreeDiffs.openOnGitHub",
-          "when": "view == worktreeDiffs && viewItem =~ /\\.(web|pr)$/",
+          "command": "crosscut.openOnGitHub",
+          "when": "view == crosscut && viewItem =~ /\\.(web|pr)$/",
           "group": "2_web@1"
         },
         {
-          "command": "worktreeDiffs.showReviews",
-          "when": "view == worktreeDiffs && viewItem =~ /\\.pr$/",
+          "command": "crosscut.showReviews",
+          "when": "view == crosscut && viewItem =~ /\\.pr$/",
           "group": "inline@1"
         },
         {
-          "command": "worktreeDiffs.stageReview",
-          "when": "view == worktreeDiffs && viewItem =~ /\\.pr$/",
+          "command": "crosscut.stageReview",
+          "when": "view == crosscut && viewItem =~ /\\.pr$/",
           "group": "3_review@1"
         },
         {
-          "command": "worktreeDiffs.discardDrafts",
-          "when": "view == worktreeDiffs && viewItem =~ /\\.pr$/",
+          "command": "crosscut.discardDrafts",
+          "when": "view == crosscut && viewItem =~ /\\.pr$/",
           "group": "3_review@2"
         },
         {
-          "command": "worktreeDiffs.showFileComments",
-          "when": "view == worktreeDiffs && viewItem =~ /\\.commented$/",
+          "command": "crosscut.showFileComments",
+          "when": "view == crosscut && viewItem =~ /\\.commented$/",
           "group": "inline@0"
         },
         {
-          "command": "worktreeDiffs.showDescription",
-          "when": "view == worktreeDiffs && viewItem =~ /^branch/",
+          "command": "crosscut.showDescription",
+          "when": "view == crosscut && viewItem =~ /^branch/",
           "group": "inline@0"
         },
         {
-          "command": "worktreeDiffs.showDescription",
-          "when": "view == worktreeDiffs && viewItem =~ /^worktree/",
+          "command": "crosscut.showDescription",
+          "when": "view == crosscut && viewItem =~ /^worktree/",
           "group": "2_web@0"
         }
       ],
       "commandPalette": [
         {
-          "command": "worktreeDiffs.toggleMode",
+          "command": "crosscut.toggleMode",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.openWorktree",
+          "command": "crosscut.openWorktree",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.openDiff",
+          "command": "crosscut.openDiff",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.openFile",
+          "command": "crosscut.openFile",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.compareWithCurrent",
+          "command": "crosscut.compareWithCurrent",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.openAll",
+          "command": "crosscut.openAll",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.pickBase",
+          "command": "crosscut.pickBase",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.fetch",
+          "command": "crosscut.fetch",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.deleteBranch",
+          "command": "crosscut.deleteBranch",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.cleanupMerged",
+          "command": "crosscut.cleanupMerged",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.openCommitTree",
+          "command": "crosscut.openCommitTree",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.openPrForCommit",
+          "command": "crosscut.openPrForCommit",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.closeAdHoc",
+          "command": "crosscut.closeAdHoc",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.openOnGitHub",
+          "command": "crosscut.openOnGitHub",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.openPrInBrowser",
+          "command": "crosscut.openPrInBrowser",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.traceThroughPr",
+          "command": "crosscut.traceThroughPr",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.showReviews",
+          "command": "crosscut.showReviews",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.addDraft",
+          "command": "crosscut.addDraft",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.deleteDraft",
+          "command": "crosscut.deleteDraft",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.stageReview",
+          "command": "crosscut.stageReview",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.discardDrafts",
+          "command": "crosscut.discardDrafts",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.showFileComments",
+          "command": "crosscut.showFileComments",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.showDescription",
+          "command": "crosscut.showDescription",
           "when": "false"
         },
         {
-          "command": "worktreeDiffs.openAuthor",
+          "command": "crosscut.openAuthor",
           "when": "false"
         }
       ],
       "editor/title": [
         {
-          "command": "worktreeDiffs.toggleBlame",
-          "when": "worktreeDiffs.canBlame",
+          "command": "crosscut.toggleBlame",
+          "when": "crosscut.canBlame",
           "group": "navigation@9"
         }
       ],
       "comments/commentThread/context": [
         {
-          "command": "worktreeDiffs.addDraft",
+          "command": "crosscut.addDraft",
           "group": "inline",
-          "when": "commentController == worktreeDiffs.prComments"
+          "when": "commentController == crosscut.prComments"
         }
       ],
       "comments/comment/title": [
         {
-          "command": "worktreeDiffs.deleteDraft",
+          "command": "crosscut.deleteDraft",
           "group": "inline",
-          "when": "commentController == worktreeDiffs.prComments && comment == draft"
+          "when": "commentController == crosscut.prComments && comment == draft"
         }
       ]
     },
     "configuration": {
-      "title": "Worktree Diffs",
+      "title": "Crosscut",
       "properties": {
-        "worktreeDiffs.baseBranch": {
+        "crosscut.baseBranch": {
           "type": "string",
           "default": "",
           "description": "Branch that 'branch' mode diffs against (via merge-base). Empty = auto-detect: main, master, then origin/HEAD."
         },
-        "worktreeDiffs.defaultMode": {
+        "crosscut.defaultMode": {
           "type": "string",
           "enum": [
             "branch",
@@ -420,22 +420,22 @@
           "default": "branch",
           "description": "Initial diff mode for each worktree. Toggle per worktree from the view."
         },
-        "worktreeDiffs.blameHover": {
+        "crosscut.blameHover": {
           "type": "boolean",
           "default": true,
           "description": "Show git blame for the hovered line (author, date, commit) in editors, including the snapshot files used as the old side of a diff."
         },
-        "worktreeDiffs.detectStackedBase": {
+        "crosscut.detectStackedBase": {
           "type": "boolean",
           "default": true,
           "description": "Diff a branch against the branch it is stacked on (a branch contained in it but not yet in the base branch), instead of against the base branch."
         },
-        "worktreeDiffs.showPrComments": {
+        "crosscut.showPrComments": {
           "type": "boolean",
           "default": true,
           "description": "Render a pull request's review comments in the diff gutter (needs the GitHub CLI)."
         },
-        "worktreeDiffs.fetchedPrRefs": {
+        "crosscut.fetchedPrRefs": {
           "type": "string",
           "enum": [
             "session",
@@ -471,14 +471,15 @@
     "pull request",
     "code review",
     "blame",
-    "submodule"
+    "submodule",
+    "stacked branches"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/ryan-barry-99/vscode-worktree-diffs.git"
+    "url": "https://github.com/ryan-barry-99/crosscut.git"
   },
   "bugs": {
-    "url": "https://github.com/ryan-barry-99/vscode-worktree-diffs/issues"
+    "url": "https://github.com/ryan-barry-99/crosscut/issues"
   },
-  "homepage": "https://github.com/ryan-barry-99/vscode-worktree-diffs#readme"
+  "homepage": "https://github.com/ryan-barry-99/crosscut#readme"
 }

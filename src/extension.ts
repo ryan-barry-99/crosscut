@@ -32,7 +32,7 @@ import {
   showAtRef,
 } from './git';
 
-const SCHEME = 'wtdiff';
+const SCHEME = 'crosscut-ref';
 let log: vscode.LogOutputChannel;
 let lastGhError: string | undefined; // most recent GitHub CLI failure, shown instead of "not found"
 
@@ -433,7 +433,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   constructor(private readonly state: vscode.Memento) {}
 
   modeFor(node: WorktreeNode): Mode {
-    const def = vscode.workspace.getConfiguration('worktreeDiffs').get<Mode>('defaultMode', 'branch');
+    const def = vscode.workspace.getConfiguration('crosscut').get<Mode>('defaultMode', 'branch');
     const mode = this.state.get<Mode>(`mode:${node.key}`, node.ref ? 'branch' : def);
     return node.ref && mode === 'uncommitted' ? 'branch' : mode; // a branch has no working tree
   }
@@ -453,7 +453,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   async pickBase(node: WorktreeNode) {
     const cwd = node.wt.path;
     const tip = node.ref?.sha ?? 'HEAD';
-    const configured = vscode.workspace.getConfiguration('worktreeDiffs').get<string>('baseBranch', '');
+    const configured = vscode.workspace.getConfiguration('crosscut').get<string>('baseBranch', '');
     const base = await detectBaseBranch(cwd, configured);
     const self = node.ref?.ref ?? (node.wt.branch ? `refs/heads/${node.wt.branch}` : undefined);
     const stack = base ? await stackCandidates(cwd, tip, base, self) : [];
@@ -646,7 +646,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
 
   /** Inline review comments for a PR row (or a branch that has one), rendered as comment threads. */
   private async loadComments(node: WorktreeNode) {
-    if (!vscode.workspace.getConfiguration('worktreeDiffs').get<boolean>('showPrComments', true)) return;
+    if (!vscode.workspace.getConfiguration('crosscut').get<boolean>('showPrComments', true)) return;
     const main = node.wt.path;
     if (node.prNumber === undefined && node.ref && !node.ref.ref.startsWith('adhoc/')) {
       const prs = await this.prsFor(main);
@@ -782,7 +782,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     this.rewatchExpanded();
     if (previous) {
       // Accordion: VS Code has no per-item collapse API, so collapse all and re-reveal the new one.
-      await vscode.commands.executeCommand('workbench.actions.treeView.worktreeDiffs.collapseAll');
+      await vscode.commands.executeCommand('workbench.actions.treeView.crosscut.collapseAll');
       await view.reveal(node, { expand: true, select: false, focus: false });
     }
   }
@@ -830,7 +830,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
         baseRef = mb;
         baseLabel = `vs ${shortName(ref)}`;
       } else {
-        const cfg = vscode.workspace.getConfiguration('worktreeDiffs');
+        const cfg = vscode.workspace.getConfiguration('crosscut');
         const base = await detectBaseBranch(cwd, cfg.get<string>('baseBranch', ''));
         // A stacked branch diffed against the base branch would claim its predecessor's changes.
         const stack =
@@ -1108,7 +1108,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       new vscode.ThemeColor(STATUS_COLOR[change.status] ?? 'foreground'),
     );
     item.contextValue = (owner.isCurrent && !owner.ref ? 'file' : 'file.foreign') + (n ? '.commented' : '');
-    item.command = { command: 'worktreeDiffs.openDiff', title: 'Open Diff', arguments: [node] };
+    item.command = { command: 'crosscut.openDiff', title: 'Open Diff', arguments: [node] };
     item.id = `f:${owner.key}:${node.diff.root}:${change.path}`;
     return item;
   }
@@ -1135,7 +1135,7 @@ function watch(pattern: vscode.RelativePattern, onEvent: (uri: vscode.Uri) => vo
  * rendered makes those providers run git against paths outside the workspace, which stalls the tree.
  */
 function itemUri(absPath: string): vscode.Uri {
-  return vscode.Uri.from({ scheme: 'wtdiff-item', path: absPath });
+  return vscode.Uri.from({ scheme: 'crosscut-item', path: absPath });
 }
 
 /** Where a worktree lives, short enough for a row: relative to the main checkout, an agent
@@ -1160,7 +1160,7 @@ function isInside(child: string, parent: string): boolean {
 // ---------------------------------------------------------------------------
 // Commands
 
-const DESC_SCHEME = 'wtdiff-desc';
+const DESC_SCHEME = 'crosscut-desc';
 const descriptions = new Map<string, string>(); // uri -> markdown
 const descChanged = new vscode.EventEmitter<vscode.Uri>();
 
@@ -1443,18 +1443,18 @@ function blameHover(b: BlameLine, target: BlameTarget): vscode.MarkdownString {
   md.appendMarkdown(
     [
       `**${b.summary}**`,
-      `$(person) [${b.author}](command:worktreeDiffs.openAuthor?${author}) · ${b.when} (${b.date})`,
-      `$(git-commit) \`${b.sha.slice(0, 10)}\`${b.origPath !== target.rel ? ` · was \`${b.origPath}\`` : ''} · [This file's change](command:worktreeDiffs.showCommit?${args})`,
+      `$(person) [${b.author}](command:crosscut.openAuthor?${author}) · ${b.when} (${b.date})`,
+      `$(git-commit) \`${b.sha.slice(0, 10)}\`${b.origPath !== target.rel ? ` · was \`${b.origPath}\`` : ''} · [This file's change](command:crosscut.showCommit?${args})`,
       [
-        `[$(git-commit) Open the whole commit](command:worktreeDiffs.openCommitTree?${args})`,
+        `[$(git-commit) Open the whole commit](command:crosscut.openCommitTree?${args})`,
         ...(prNumber
           ? [
-              `[$(git-pull-request) Open PR #${prNumber} here](command:worktreeDiffs.openPrForCommit?${args})`,
-              `[$(globe) PR #${prNumber} on GitHub](command:worktreeDiffs.openPrInBrowser?${args})`,
+              `[$(git-pull-request) Open PR #${prNumber} here](command:crosscut.openPrForCommit?${args})`,
+              `[$(globe) PR #${prNumber} on GitHub](command:crosscut.openPrInBrowser?${args})`,
             ]
           : []),
       ].join(' · '),
-      ...(prNumber ? [`[$(search) Find the original commit inside PR #${prNumber}](command:worktreeDiffs.traceThroughPr?${trace})`] : []),
+      ...(prNumber ? [`[$(search) Find the original commit inside PR #${prNumber}](command:crosscut.traceThroughPr?${trace})`] : []),
     ].join('\n\n'),
   );
   return md;
@@ -1468,7 +1468,7 @@ async function openAuthor(arg: { root: string; sha: string; email: string; name:
   const noreply = /^(?:\d+\+)?([^@]+)@users\.noreply\.github\.com$/.exec(arg.email)?.[1];
   const login =
     noreply ??
-    (await vscode.window.withProgress({ location: { viewId: 'worktreeDiffs' }, title: 'Looking up author…' }, () =>
+    (await vscode.window.withProgress({ location: { viewId: 'crosscut' }, title: 'Looking up author…' }, () =>
       commitAuthorLogin(arg.root, arg.sha),
     ));
   const url = login
@@ -1534,8 +1534,8 @@ async function traceThroughPr(arg: { root: string; sha: string; rel: string; lin
     },
   );
   if (pick?.id === 'file') await showCommit({ root: main, sha: original.sha, rel: original.origPath });
-  else if (pick?.id === 'tree') await vscode.commands.executeCommand('worktreeDiffs.openCommitTree', { root: main, sha: original.sha });
-  else if (pick?.id === 'web') await vscode.commands.executeCommand('worktreeDiffs.openPrInBrowser', { root: main, sha: arg.sha });
+  else if (pick?.id === 'tree') await vscode.commands.executeCommand('crosscut.openCommitTree', { root: main, sha: original.sha });
+  else if (pick?.id === 'web') await vscode.commands.executeCommand('crosscut.openPrInBrowser', { root: main, sha: arg.sha });
 }
 
 /** Diff of one file across the commit a blame line points at. */
@@ -1732,7 +1732,7 @@ function doneMessage(count: number, failed: string[]) {
  * one call, whereas a forgotten ref keeps a whole PR's objects alive forever.
  */
 async function pruneFetchedPrRefs(repos: string[]) {
-  const mode = vscode.workspace.getConfiguration('worktreeDiffs').get<string>('fetchedPrRefs', 'session');
+  const mode = vscode.workspace.getConfiguration('crosscut').get<string>('fetchedPrRefs', 'session');
   if (mode === 'keep') return;
   const cutoff = mode === 'week' ? 7 * 86400_000 : 0;
   for (const repo of repos) {
@@ -1749,9 +1749,9 @@ async function pruneFetchedPrRefs(repos: string[]) {
 const fetchedAt = new Map<string, number>(); // "<repo>\0<ref>" -> when this session fetched it
 
 export function activate(context: vscode.ExtensionContext) {
-  log = vscode.window.createOutputChannel('Worktree Diffs', { log: true });
+  log = vscode.window.createOutputChannel('Crosscut', { log: true });
   drafts = new Drafts(context.workspaceState);
-  comments = vscode.comments.createCommentController('worktreeDiffs.prComments', 'PR review comments');
+  comments = vscode.comments.createCommentController('crosscut.prComments', 'PR review comments');
   // Allow commenting anywhere in a file that belongs to a pull request row.
   comments.commentingRangeProvider = {
     provideCommentingRanges(document) {
@@ -1775,7 +1775,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push({ dispose: () => clearInterval(lag) });
   storageRoot = path.join(context.globalStorageUri.fsPath, 'repos');
   const provider = new WorktreeDiffsProvider(context.workspaceState);
-  const view = vscode.window.createTreeView('worktreeDiffs', { treeDataProvider: provider, showCollapseAll: true });
+  const view = vscode.window.createTreeView('crosscut', { treeDataProvider: provider, showCollapseAll: true });
 
   context.subscriptions.push(
     provider,
@@ -1791,34 +1791,34 @@ export function activate(context: vscode.ExtensionContext) {
       provideTextDocumentContent: (uri) => descriptions.get(uri.toString()) ?? '',
     }),
     descChanged,
-    vscode.commands.registerCommand('worktreeDiffs.showDescription', showDescription),
-    vscode.commands.registerCommand('worktreeDiffs.refresh', async () => {
+    vscode.commands.registerCommand('crosscut.showDescription', showDescription),
+    vscode.commands.registerCommand('crosscut.refresh', async () => {
       await provider.refresh();
       provider.refreshExpanded();
     }),
-    vscode.commands.registerCommand('worktreeDiffs.toggleMode', (n: WorktreeNode) => provider.toggleMode(n)),
-    vscode.commands.registerCommand('worktreeDiffs.pickBase', (n: WorktreeNode) => provider.pickBase(n)),
-    vscode.commands.registerCommand('worktreeDiffs.openWorktree', (n: WorktreeNode) =>
+    vscode.commands.registerCommand('crosscut.toggleMode', (n: WorktreeNode) => provider.toggleMode(n)),
+    vscode.commands.registerCommand('crosscut.pickBase', (n: WorktreeNode) => provider.pickBase(n)),
+    vscode.commands.registerCommand('crosscut.openWorktree', (n: WorktreeNode) =>
       vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(n.wt.path), { forceNewWindow: true }),
     ),
-    vscode.commands.registerCommand('worktreeDiffs.openDiff', openDiff),
-    vscode.commands.registerCommand('worktreeDiffs.openAll', openAll),
-    vscode.commands.registerCommand('worktreeDiffs.openFile', async (n: FileNode) =>
+    vscode.commands.registerCommand('crosscut.openDiff', openDiff),
+    vscode.commands.registerCommand('crosscut.openAll', openAll),
+    vscode.commands.registerCommand('crosscut.openFile', async (n: FileNode) =>
       vscode.window.showTextDocument((await diffSides(n)).right),
     ),
-    vscode.commands.registerCommand('worktreeDiffs.fetch', async (g: BranchGroupNode) => {
+    vscode.commands.registerCommand('crosscut.fetch', async (g: BranchGroupNode) => {
       await vscode.window.withProgress(
-        { location: { viewId: 'worktreeDiffs' }, title: 'Fetching…' },
+        { location: { viewId: 'crosscut' }, title: 'Fetching…' },
         () => git(g.mainPath, ['fetch', '--all', '--prune']).catch((e) => vscode.window.showErrorMessage(String(e))),
       );
       await provider.refresh();
     }),
-    vscode.commands.registerCommand('worktreeDiffs.compareWithCurrent', compareWithCurrent),
-    vscode.commands.registerCommand('worktreeDiffs.toggleBlame', toggleBlame),
-    vscode.commands.registerCommand('worktreeDiffs.showCommit', showCommit),
-    vscode.commands.registerCommand('worktreeDiffs.traceThroughPr', traceThroughPr),
-    vscode.commands.registerCommand('worktreeDiffs.openAuthor', openAuthor),
-    vscode.commands.registerCommand('worktreeDiffs.showFileComments', async (n: FileNode) => {
+    vscode.commands.registerCommand('crosscut.compareWithCurrent', compareWithCurrent),
+    vscode.commands.registerCommand('crosscut.toggleBlame', toggleBlame),
+    vscode.commands.registerCommand('crosscut.showCommit', showCommit),
+    vscode.commands.registerCommand('crosscut.traceThroughPr', traceThroughPr),
+    vscode.commands.registerCommand('crosscut.openAuthor', openAuthor),
+    vscode.commands.registerCommand('crosscut.showFileComments', async (n: FileNode) => {
       const list = n.owner.inlineComments.filter((c) => c.path === n.change.path);
       if (!list.length) return;
       const items = list.map((c) => ({
@@ -1842,7 +1842,7 @@ export function activate(context: vscode.ExtensionContext) {
         await vscode.env.openExternal(vscode.Uri.parse(picked.comment.url)); // outdated: only GitHub has its context
       }
     }),
-    vscode.commands.registerCommand('worktreeDiffs.addDraft', async (reply: vscode.CommentReply) => {
+    vscode.commands.registerCommand('crosscut.addDraft', async (reply: vscode.CommentReply) => {
       const owner = ownerOfDocument(reply.thread.uri);
       if (!owner?.node.prNumber || !reply.text.trim()) return;
       await drafts.add(owner.node, { path: owner.rel, line: (reply.thread.range?.start.line ?? 0) + 1, side: owner.side, body: reply.text });
@@ -1852,7 +1852,7 @@ export function activate(context: vscode.ExtensionContext) {
         `Draft saved for PR #${owner.node.prNumber}. Use "Stage review" on the PR row to send it to GitHub as a pending review.`,
       );
     }),
-    vscode.commands.registerCommand('worktreeDiffs.deleteDraft', async (comment: vscode.Comment & { draftId?: string }) => {
+    vscode.commands.registerCommand('crosscut.deleteDraft', async (comment: vscode.Comment & { draftId?: string }) => {
       for (const node of storeOwners.values()) {
         if (!comment.draftId || !drafts.get(node).some((d) => d.id === comment.draftId)) continue;
         await drafts.remove(node, comment.draftId);
@@ -1860,7 +1860,7 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
     }),
-    vscode.commands.registerCommand('worktreeDiffs.stageReview', async (n: WorktreeNode) => {
+    vscode.commands.registerCommand('crosscut.stageReview', async (n: WorktreeNode) => {
       const list = drafts.get(n);
       if (!n.prNumber || !list.length) {
         vscode.window.showInformationMessage('No draft comments to stage on this pull request.');
@@ -1872,7 +1872,7 @@ export function activate(context: vscode.ExtensionContext) {
       });
       if (body === undefined) return;
       const result = await vscode.window.withProgress(
-        { location: { viewId: 'worktreeDiffs' }, title: 'Staging pending review…' },
+        { location: { viewId: 'crosscut' }, title: 'Staging pending review…' },
         () => stagePendingReview(n.wt.path, n.prNumber!, body, list.map(({ path, line, side, body }) => ({ path, line, side, body }))),
       );
       if (!result.ok) {
@@ -1885,9 +1885,9 @@ export function activate(context: vscode.ExtensionContext) {
         `Staged ${list.length} comment${list.length === 1 ? '' : 's'} as a pending review on PR #${n.prNumber}. Nobody sees it until you submit it on GitHub.`,
         'Open PR',
       );
-      if (open) await vscode.commands.executeCommand('worktreeDiffs.openOnGitHub', n);
+      if (open) await vscode.commands.executeCommand('crosscut.openOnGitHub', n);
     }),
-    vscode.commands.registerCommand('worktreeDiffs.discardDrafts', async (n: WorktreeNode) => {
+    vscode.commands.registerCommand('crosscut.discardDrafts', async (n: WorktreeNode) => {
       const list = drafts.get(n);
       if (!list.length) return;
       const ok = await vscode.window.showWarningMessage(`Discard ${list.length} draft comment(s)?`, { modal: true }, 'Discard');
@@ -1895,7 +1895,7 @@ export function activate(context: vscode.ExtensionContext) {
       await drafts.set(n, []);
       await provider.reloadComments(n);
     }),
-    vscode.commands.registerCommand('worktreeDiffs.showReviews', async (n: WorktreeNode) => {
+    vscode.commands.registerCommand('crosscut.showReviews', async (n: WorktreeNode) => {
       if (!n.prNumber) {
         vscode.window.showInformationMessage('No pull request is associated with this row.');
         return;
@@ -1928,7 +1928,7 @@ export function activate(context: vscode.ExtensionContext) {
       });
       if (picked?.url) await vscode.env.openExternal(vscode.Uri.parse(picked.url));
     }),
-    vscode.commands.registerCommand('worktreeDiffs.openCommitTree', async (arg: { root: string; sha: string }) => {
+    vscode.commands.registerCommand('crosscut.openCommitTree', async (arg: { root: string; sha: string }) => {
       const main = (await repoMainPath(arg.root)) ?? arg.root;
       const [subject, when, author] = (
         await git(arg.root, ['show', '-s', '--format=%s%x1f%cr%x1f%an', arg.sha])
@@ -1939,9 +1939,9 @@ export function activate(context: vscode.ExtensionContext) {
         view,
       );
     }),
-    vscode.commands.registerCommand('worktreeDiffs.openPrForCommit', async (arg: { root: string; sha: string }) => {
+    vscode.commands.registerCommand('crosscut.openPrForCommit', async (arg: { root: string; sha: string }) => {
       const main = (await repoMainPath(arg.root)) ?? arg.root;
-      const pr = await vscode.window.withProgress({ location: { viewId: 'worktreeDiffs' }, title: 'Finding pull request…' }, () =>
+      const pr = await vscode.window.withProgress({ location: { viewId: 'crosscut' }, title: 'Finding pull request…' }, () =>
         prForCommit(arg.root, arg.sha),
       );
       if (!pr) {
@@ -1976,8 +1976,8 @@ export function activate(context: vscode.ExtensionContext) {
         pr.url,
       );
     }),
-    vscode.commands.registerCommand('worktreeDiffs.openPrInBrowser', async (arg: { root: string; sha: string }) => {
-      const pr = await vscode.window.withProgress({ location: { viewId: 'worktreeDiffs' }, title: 'Finding pull request…' }, () =>
+    vscode.commands.registerCommand('crosscut.openPrInBrowser', async (arg: { root: string; sha: string }) => {
+      const pr = await vscode.window.withProgress({ location: { viewId: 'crosscut' }, title: 'Finding pull request…' }, () =>
         prForCommit(arg.root, arg.sha),
       );
       if (!pr) {
@@ -1986,7 +1986,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
       await vscode.env.openExternal(vscode.Uri.parse(pr.url));
     }),
-    vscode.commands.registerCommand('worktreeDiffs.cleanPrRefs', async () => {
+    vscode.commands.registerCommand('crosscut.cleanPrRefs', async () => {
       const repos = provider.repoPaths();
       const found: { repo: string; ref: string; when: string }[] = [];
       for (const repo of repos) for (const r of await listRefs(repo, 'refs/prs')) found.push({ repo, ...r });
@@ -2003,13 +2003,13 @@ export function activate(context: vscode.ExtensionContext) {
       for (const f of found) await deleteRef(f.repo, f.ref).catch(() => undefined);
       vscode.window.showInformationMessage(`Deleted ${found.length} fetched PR ref${found.length === 1 ? '' : 's'}.`);
     }),
-    vscode.commands.registerCommand('worktreeDiffs.closeAdHoc', (n: WorktreeNode) => provider.closeAdHoc(n)),
-    vscode.commands.registerCommand('worktreeDiffs.openOnGitHub', async (n: WorktreeNode) => {
+    vscode.commands.registerCommand('crosscut.closeAdHoc', (n: WorktreeNode) => provider.closeAdHoc(n)),
+    vscode.commands.registerCommand('crosscut.openOnGitHub', async (n: WorktreeNode) => {
       const main = n.wt.path;
       let url = n.webUrl;
       const branch = n.ref && !n.ref.ref.startsWith('adhoc/') ? branchNameOf(n.ref) : n.wt.branch;
       if (!url && branch) {
-        const prs = await vscode.window.withProgress({ location: { viewId: 'worktreeDiffs' }, title: 'Looking up pull request…' }, () =>
+        const prs = await vscode.window.withProgress({ location: { viewId: 'crosscut' }, title: 'Looking up pull request…' }, () =>
           prsByBranch(main),
         );
         url =
@@ -2028,7 +2028,7 @@ export function activate(context: vscode.ExtensionContext) {
       [{ scheme: 'file' }],
       {
         async provideHover(doc, pos) {
-          if (!vscode.workspace.getConfiguration('worktreeDiffs').get<boolean>('blameHover', true)) return undefined;
+          if (!vscode.workspace.getConfiguration('crosscut').get<boolean>('blameHover', true)) return undefined;
           const target = await blameTarget(doc.uri);
           if (!target) return undefined;
           const lines = await blameForDocument(doc, target).catch(() => undefined);
@@ -2037,7 +2037,7 @@ export function activate(context: vscode.ExtensionContext) {
         },
       },
     ),
-    vscode.commands.registerCommand('worktreeDiffs.deleteBranch', async (n: WorktreeNode) => {
+    vscode.commands.registerCommand('crosscut.deleteBranch', async (n: WorktreeNode) => {
       const main = n.wt.path;
       const base = (await detectBaseBranch(main, '')) ?? 'main';
       const verdict = await classify(main, n, base, await prsByBranch(main));
@@ -2053,7 +2053,7 @@ export function activate(context: vscode.ExtensionContext) {
       doneMessage(1, await deleteBranches(main, [verdict]));
       await provider.refresh();
     }),
-    vscode.commands.registerCommand('worktreeDiffs.cleanupMerged', async (g: BranchGroupNode) => {
+    vscode.commands.registerCommand('crosscut.cleanupMerged', async (g: BranchGroupNode) => {
       const main = g.mainPath;
       const base = (await detectBaseBranch(main, '')) ?? 'main';
       const gone = g.branches.filter((n) => n.ref?.track === 'gone');
@@ -2062,7 +2062,7 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
       const prs = await vscode.window.withProgress(
-        { location: { viewId: 'worktreeDiffs' }, title: 'Checking pull requests…' },
+        { location: { viewId: 'crosscut' }, title: 'Checking pull requests…' },
         () => prsByBranch(main),
       );
       const classified = await Promise.all(gone.map((n) => classify(main, n, base, prs)));
@@ -2108,12 +2108,12 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.onDidChangeActiveTextEditor(async (e) => {
       // Only offer the button where blame can actually be produced.
       const can = !!(e && (await blameTarget(e.document.uri)));
-      void vscode.commands.executeCommand('setContext', 'worktreeDiffs.canBlame', can);
+      void vscode.commands.executeCommand('setContext', 'crosscut.canBlame', can);
     }),
     vscode.workspace.onDidCloseTextDocument((d) => blamed.delete(d.uri.toString())),
     vscode.workspace.onDidChangeWorkspaceFolders(() => provider.refresh()),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('worktreeDiffs')) provider.refresh();
+      if (e.affectsConfiguration('crosscut')) provider.refresh();
     }),
     vscode.window.onDidChangeWindowState((s) => {
       if (s.focused) provider.scheduleRefresh();

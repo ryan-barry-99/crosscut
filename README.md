@@ -1,4 +1,4 @@
-# Worktree Diffs
+# Crosscut
 
 See what changed in every git worktree, branch and pull request of a repository — from one tree in VS Code, with full language support in the diffs.
 
@@ -40,18 +40,18 @@ With the [GitHub CLI](https://cli.github.com/) installed and authenticated:
 ## Housekeeping
 
 - **Clean up merged branches**: local branches whose upstream is gone, classified by whether git or the PR can prove they were merged. Merged ones are pre-selected, every deletion is confirmed, and each deleted tip is logged with the `git branch <name> <sha>` needed to restore it.
-- **Fetched PR refs** (`refs/prs/*`) are dropped at the start of the next session by default, since they pin objects. See `worktreeDiffs.fetchedPrRefs`.
+- **Fetched PR refs** (`refs/prs/*`) are dropped at the start of the next session by default, since they pin objects. See `crosscut.fetchedPrRefs`.
 
 ## Settings
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `worktreeDiffs.baseBranch` | *(auto)* | Branch to compare against; empty tries `main`, `master`, then `origin/HEAD`. |
-| `worktreeDiffs.defaultMode` | `branch` | Initial comparison for a worktree: `branch` or `uncommitted`. |
-| `worktreeDiffs.detectStackedBase` | `true` | Diff a stacked branch against its predecessor rather than the base branch. |
-| `worktreeDiffs.showPrComments` | `true` | Render pull-request review comments in diffs. |
-| `worktreeDiffs.blameHover` | `true` | Show blame for the hovered line. |
-| `worktreeDiffs.fetchedPrRefs` | `session` | Lifetime of fetched PR refs: `session`, `week` or `keep`. |
+| `crosscut.baseBranch` | *(auto)* | Branch to compare against; empty tries `main`, `master`, then `origin/HEAD`. |
+| `crosscut.defaultMode` | `branch` | Initial comparison for a worktree: `branch` or `uncommitted`. |
+| `crosscut.detectStackedBase` | `true` | Diff a stacked branch against its predecessor rather than the base branch. |
+| `crosscut.showPrComments` | `true` | Render pull-request review comments in diffs. |
+| `crosscut.blameHover` | `true` | Show blame for the hovered line. |
+| `crosscut.fetchedPrRefs` | `session` | Lifetime of fetched PR refs: `session`, `week` or `keep`. |
 
 ## Requirements
 
@@ -63,6 +63,6 @@ With the [GitHub CLI](https://cli.github.com/) installed and authenticated:
 
 ```
 npm install
-npm run package          # produces worktree-diffs-<version>.vsix
-code --install-extension worktree-diffs-<version>.vsix
+npm run package          # produces crosscut-<version>.vsix
+code --install-extension crosscut-<version>.vsix
 ```
