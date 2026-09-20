@@ -242,13 +242,34 @@ async function submodulePaths(cwd: string): Promise<string[]> {
 
 /** Commit a superproject records for a submodule at `ref`, if any. */
 async function gitlinkAt(cwd: string, ref: string, rel: string): Promise<string | undefined> {
-  try {
-    const out = await git(cwd, ['ls-tree', '-z', ref, '--', rel]);
-    const m = /^160000 commit ([0-9a-f]+)\t/.exec(out);
-    return m?.[1];
-  } catch {
-    return undefined;
+  return (await gitlinksAt(cwd, ref, [rel])).get(rel);
+}
+
+/**
+ * Gitlink commits for many paths at `ref`, path -> sha, omitting paths that are not submodules.
+ * `ls-tree` takes every path in one call, so this costs a couple of processes rather than one per
+ * changed file — the difference between ~4ms and a couple of seconds on a branch touching hundreds.
+ */
+async function gitlinksAt(cwd: string, ref: string, rels: string[]): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  const CHUNK = 400; // keep the argument list well clear of ARG_MAX
+  for (let i = 0; i < rels.length; i += CHUNK) {
+    let out: string;
+    try {
+      out = await git(cwd, ['-c', 'core.quotePath=false', 'ls-tree', '-z', ref, '--', ...rels.slice(i, i + CHUNK)]);
+    } catch {
+      continue; // ref missing or unreadable: no gitlinks to report from it
+    }
+    for (const rec of out.split('\0')) {
+      // `<mode> <type> <sha>\t<path>`; split on the first tab rather than matching to end of line,
+      // since core.quotePath=false leaves newlines in a path raw.
+      const tab = rec.indexOf('\t');
+      if (tab < 0) continue;
+      const m = /^160000 commit ([0-9a-f]+)$/.exec(rec.slice(0, tab));
+      if (m) found.set(rec.slice(tab + 1), m[1]);
+    }
   }
+  return found;
 }
 
 /** A submodule counts as checked out only if it is its own repo root with actual files in it; an
@@ -399,9 +420,11 @@ export async function loadRefDiff(root: string, baseRef: string, headRef: string
   const out = await git(root, ['-c', 'core.quotePath=false', 'diff', '--name-status', '-z', '-M', baseRef, headRef, '--']);
   const changes = parseNameStatus(out).sort((a, b) => a.path.localeCompare(b.path));
   const subs = new Set(await submodulePaths(root).catch(() => [] as string[]));
+  const paths = changes.map((c) => c.path);
+  const [oldLinks, newLinks] = await Promise.all([gitlinksAt(root, baseRef, paths), gitlinksAt(root, headRef, paths)]);
   await Promise.all(
     changes.map(async (c) => {
-      const [oldSha, newSha] = await Promise.all([gitlinkAt(root, baseRef, c.path), gitlinkAt(root, headRef, c.path)]);
+      const [oldSha, newSha] = [oldLinks.get(c.path), newLinks.get(c.path)];
       if (!oldSha && !newSha) return;
       c.gitlink = true;
       const subRoot = path.join(root, c.path);
