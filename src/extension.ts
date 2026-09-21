@@ -983,6 +983,21 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     }
   }
 
+  /**
+   * "Open All Changes" on a collapsed row: make it the expanded one first (so the accordion and the
+   * file watcher follow), wait for its diff, then open.
+   */
+  async openAll(node: WorktreeNode | FolderNode | SubmoduleNode, view: vscode.TreeView<Node>) {
+    if (node instanceof WorktreeNode) {
+      if (node !== this.expanded) {
+        await view.reveal(node, { expand: true, select: true, focus: false });
+        await this.onExpand(node, view); // no-op if the reveal's expand event already did it
+      }
+      if (node.stale || !node.diff) await this.reload(node);
+    }
+    await openAll(node);
+  }
+
   onCollapse(node: Node) {
     if (node === this.expanded) {
       this.expanded = undefined;
@@ -1505,7 +1520,7 @@ function collectFiles(nodes: Child[], out: FileNode[] = []): FileNode[] {
 }
 
 /** All changes under a worktree, folder or submodule in one multi-file diff editor. */
-async function openAll(node: WorktreeNode | FolderNode | SubmoduleNode) {
+async function openAll(node: WorktreeNode | FolderNode | SubmoduleNode, reveal?: FileNode) {
   const files = collectFiles(node instanceof WorktreeNode ? node.tree : node.children);
   if (!files.length) return;
   const owner = files[0].owner;
@@ -1522,26 +1537,58 @@ async function openAll(node: WorktreeNode | FolderNode | SubmoduleNode) {
   const title = `${branch}${scope} (${owner.baseLabel})`;
   const all: AllChanges = {
     title,
-    source: vscode.Uri.from({ scheme: 'crosscut-all', path: `/${owner.key}/${scope.trim()}` }),
+    owner: `${owner.key}\0${scope}`,
+    // VS Code reuses an open editor with the same source URI and ignores the new file list, so the
+    // URI carries the comparison too: switching it gets a fresh editor. Hashed because a worktree
+    // key is an absolute path, and a URI path may not start with `//`.
+    source: vscode.Uri.from({
+      scheme: 'crosscut-all',
+      path: `/${crypto
+        .createHash('sha1')
+        .update(JSON.stringify([owner.key, scope, owner.baseLabel, owner.diff?.baseRef, owner.diff?.headRef, files.map((f) => f.change.path)]))
+        .digest('hex')}`,
+    }),
     files: files.map((f, i) => ({ rel: f.change.path, status: f.change.status, left: resources[i][1], right: resources[i][2] })),
   };
+  // An editor this row opened under a different comparison is stale now; replace it rather than
+  // leave two side by side.
+  for (const [t, other] of allChanges) {
+    if (other.owner !== all.owner || other.source.toString() === all.source.toString()) continue;
+    allChanges.delete(t);
+    const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((tab) => tab.label === t);
+    if (tabs.length) await vscode.window.tabGroups.close(tabs, true);
+  }
   allChanges.set(title, all);
+  updateAllChangesContext();
   // The private command rather than `vscode.changes`: it is the only one that can reveal a file
   // later (goToFileInAll), and reopening the same source URI reuses the editor instead of stacking tabs.
+  const at = reveal && all.files[files.indexOf(reveal)]?.right;
   try {
-    await openMultiDiff(all);
+    await openMultiDiff(all, at);
   } catch (e) {
     log.warn(`_workbench.openMultiDiffEditor failed, falling back to vscode.changes: ${e}`);
     await vscode.commands.executeCommand('vscode.changes', title, resources);
   }
 }
 
+/** The whole row's changes in one editor, scrolled to this file. */
+function openInAll(node: FileNode) {
+  return openAll(node.owner, node);
+}
+
 interface AllChanges {
   title: string;
+  owner: string; // the row and folder it was opened for
   source: vscode.Uri;
   files: { rel: string; status: string; left: vscode.Uri; right: vscode.Uri }[];
 }
 const allChanges = new Map<string, AllChanges>(); // by editor title
+
+/** Shows the go-to-file button only while one of our multi-file diff editors is the active tab. */
+function updateAllChangesContext() {
+  const label = vscode.window.tabGroups.activeTabGroup.activeTab?.label;
+  void vscode.commands.executeCommand('setContext', 'crosscut.allChangesActive', !!label && allChanges.has(label));
+}
 
 function openMultiDiff(all: AllChanges, reveal?: vscode.Uri) {
   return vscode.commands.executeCommand('_workbench.openMultiDiffEditor', {
@@ -2109,8 +2156,11 @@ export function activate(context: vscode.ExtensionContext) {
       vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(n.wt.path), { forceNewWindow: true }),
     ),
     vscode.commands.registerCommand('crosscut.openDiff', openDiff),
-    vscode.commands.registerCommand('crosscut.openAll', openAll),
+    vscode.commands.registerCommand('crosscut.openAll', (node: WorktreeNode | FolderNode | SubmoduleNode) => provider.openAll(node, view)),
     vscode.commands.registerCommand('crosscut.goToFileInAll', goToFileInAll),
+    vscode.commands.registerCommand('crosscut.openInAll', openInAll),
+    vscode.window.tabGroups.onDidChangeTabs(updateAllChangesContext),
+    vscode.window.tabGroups.onDidChangeTabGroups(updateAllChangesContext),
     vscode.commands.registerCommand('crosscut.openFile', async (n: FileNode) =>
       vscode.window.showTextDocument((await diffSides(n)).right),
     ),

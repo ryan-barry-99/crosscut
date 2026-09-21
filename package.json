@@ -48,6 +48,11 @@
         "icon": "$(diff-multiple)"
       },
       {
+        "command": "crosscut.openInAll",
+        "title": "Show in All Changes",
+        "icon": "$(diff-multiple)"
+      },
+      {
         "command": "crosscut.goToFileInAll",
         "title": "Go to File in All Changes\u2026",
         "category": "Crosscut",
@@ -189,7 +194,7 @@
         "command": "crosscut.goToFileInAll",
         "key": "ctrl+alt+o",
         "mac": "cmd+alt+o",
-        "when": "activeEditor == 'multiDiffEditor'"
+        "when": "crosscut.allChangesActive"
       }
     ],
     "menus": {
@@ -215,6 +220,11 @@
           "command": "crosscut.openFile",
           "when": "view == crosscut && viewItem =~ /^file/",
           "group": "inline@1"
+        },
+        {
+          "command": "crosscut.openInAll",
+          "when": "view == crosscut && viewItem =~ /^file/",
+          "group": "inline@0"
         },
         {
           "command": "crosscut.compareWithCurrent",
@@ -344,8 +354,12 @@
       ],
       "commandPalette": [
         {
+          "command": "crosscut.openInAll",
+          "when": "false"
+        },
+        {
           "command": "crosscut.goToFileInAll",
-          "when": "activeEditor == 'multiDiffEditor'"
+          "when": "crosscut.allChangesActive"
         },
         {
           "command": "crosscut.toggleMode",
@@ -459,7 +473,7 @@
       "editor/title": [
         {
           "command": "crosscut.goToFileInAll",
-          "when": "activeEditor == 'multiDiffEditor'",
+          "when": "crosscut.allChangesActive",
           "group": "navigation@1"
         },
         {
