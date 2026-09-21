@@ -15,9 +15,19 @@
   "main": "./out/extension.js",
   "activationEvents": [
     "workspaceContains:.git",
-    "onView:crosscut"
+    "onView:crosscut",
+    "onUri",
+    "onCustomEditor:crosscut.link"
   ],
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "crosscut.link",
+        "displayName": "Crosscut link",
+        "selector": [{ "filenamePattern": "*.crosscut-link" }],
+        "priority": "default"
+      }
+    ],
     "views": {
       "scm": [
         {
@@ -505,6 +515,11 @@
     "configuration": {
       "title": "Crosscut",
       "properties": {
+        "crosscut.installCli": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Install the `crosscut` command-line tool at `~/.local/bin/crosscut` when the extension starts, and keep it pointing at the current version. A `crosscut` the extension did not write is left alone."
+        },
         "crosscut.baseBranch": {
           "type": "string",
           "default": "",

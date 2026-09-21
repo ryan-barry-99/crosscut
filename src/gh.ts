@@ -112,6 +112,7 @@ export interface ReviewComment {
   when: string; // ISO timestamp
   url: string;
   inReplyTo?: number;
+  pending?: boolean; // in your own unsubmitted review: visible to nobody else yet
 }
 
 export interface ReviewSummary {
@@ -314,11 +315,81 @@ export function pendingReviewId(cwd: string, number: number): Promise<number | u
   return new Promise((resolve) => {
     execFile(
       'gh',
-      ['api', `repos/{owner}/{repo}/pulls/${number}/reviews`, '--jq', 'map(select(.state == "PENDING")) | .[0].id // empty'],
+      ['api', '--paginate', `repos/{owner}/{repo}/pulls/${number}/reviews?per_page=100`, '--jq', '.[] | select(.state == "PENDING") | .id'],
       { cwd, timeout: 20000 },
-      (err, stdout) => resolve(err || !stdout.trim() ? undefined : Number(stdout.trim())),
+      (err, stdout) => {
+        const first = stdout.split('\n').find(Boolean);
+        resolve(err || !first ? undefined : Number(first));
+      },
     );
   });
+}
+
+const PENDING_QUERY = `query($owner: String!, $repo: String!, $n: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $n) {
+      reviewThreads(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          diffSide
+          comments(first: 100) {
+            nodes {
+              databaseId path line startLine body createdAt url
+              author { login }
+              replyTo { databaseId }
+              pullRequestReview { state }
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+/**
+ * The comments in your pending review. The REST comment list leaves them out, and the per-review
+ * REST endpoint gives diff positions rather than lines, so this reads them off the review threads.
+ */
+const ownerRepo = new Map<string, Promise<[string, string] | undefined>>(); // cwd -> [owner, repo]
+const pendingCache = new Map<string, { at: number; value: Promise<ReviewComment[]> }>();
+
+export function pendingComments(cwd: string, number: number, fresh = false): Promise<ReviewComment[]> {
+  // Every row load asks, and each ask costs two GraphQL calls; a minute is fresh enough except
+  // when presenting a review just staged, which passes `fresh`.
+  const key = `${cwd}\0${number}`;
+  const hit = pendingCache.get(key);
+  if (!fresh && hit && Date.now() - hit.at < 60_000) return hit.value;
+  const value = fetchPending(cwd, number);
+  pendingCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+async function fetchPending(cwd: string, number: number): Promise<ReviewComment[]> {
+  let names = ownerRepo.get(cwd);
+  if (!names) {
+    names = new Promise((resolve) =>
+      execFile('gh', ['repo', 'view', '--json', 'owner,name', '--jq', '.owner.login + " " + .name'], { cwd, timeout: 20000 }, (err, out, stderr) => {
+        const [owner, repo] = out.trim().split(' ');
+        if (err || !repo) {
+          report(['repo', 'view'], err, stderr);
+          ownerRepo.delete(cwd); // retry next time rather than caching a failure
+          return resolve(undefined);
+        }
+        resolve([owner, repo]);
+      }),
+    );
+    ownerRepo.set(cwd, names);
+  }
+  const resolved = await names;
+  if (!resolved) return [];
+  const [owner, repo] = resolved;
+  return ghJson<ReviewComment>(cwd, [
+    'api', 'graphql', '--paginate', '-F', `owner=${owner}`, '-F', `repo=${repo}`, '-F', `n=${number}`, '-f', `query=${PENDING_QUERY}`,
+    '--jq',
+    '.data.repository.pullRequest.reviewThreads.nodes[] | .diffSide as $side | .comments.nodes[]' +
+      ' | select(.pullRequestReview.state == "PENDING")' +
+      ' | {id: .databaseId, path, line, startLine, side: $side, body, author: .author.login, when: .createdAt, url, inReplyTo: .replyTo.databaseId, pending: true}',
+  ]);
 }
 
 /** Comments waiting in a pending review, so a discard can say what it is about to throw away. */

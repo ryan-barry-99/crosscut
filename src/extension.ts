@@ -3,9 +3,9 @@ import { promises as fs } from 'fs';
 import * as net from 'net';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { PresentRequest, PresentResponse, WindowEntry, windowsDir } from './ipc';
+import { PresentRequest, PresentResponse, PresentSpec, WindowEntry, send, windowsDir, windowsFor } from './ipc';
 import { BlameLine, blameFile } from './blame';
-import { DraftComment, PrDetails, PrInfo, ReviewComment, ReviewSummary, commitAuthorLogin, RefTitle, refTitles, prComments, prDetails, prForCommit, prReviews, prsByBranch, repoUrl, setGhErrorHandler, stagePendingReview, pendingReviewId, pendingReviewComments, deletePendingReview } from './gh';
+import { DraftComment, PrDetails, PrInfo, ReviewComment, ReviewSummary, commitAuthorLogin, RefTitle, refTitles, prComments, prDetails, prForCommit, prReviews, pendingComments, prsByBranch, repoUrl, setGhErrorHandler, stagePendingReview, pendingReviewId, pendingReviewComments, deletePendingReview } from './gh';
 import {
   Change,
   Worktree,
@@ -374,8 +374,8 @@ function threadsFor(node: WorktreeNode, all: ReviewComment[]) {
         .map((c) => ({
           body: new vscode.MarkdownString(c.body),
           mode: vscode.CommentMode.Preview,
-          author: { name: c.author },
-          label: new Date(c.when).toLocaleString(),
+          author: { name: c.pending ? `${c.author} (pending)` : c.author },
+          label: c.pending ? 'in your pending review, not submitted' : new Date(c.when).toLocaleString(),
           contextValue: String(c.id),
         })),
     );
@@ -383,7 +383,7 @@ function threadsFor(node: WorktreeNode, all: ReviewComment[]) {
     // Collapsed: an expanded thread is an inline widget, and several of them shove the diff around
     // as they load. The end-of-line decoration below makes them visible without moving any text.
     thread.collapsibleState = vscode.CommentThreadCollapsibleState.Collapsed;
-    thread.label = `Review comment on ${first.path}`;
+    thread.label = group.every((c) => c.pending) ? `Pending review comment on ${first.path}` : `Review comment on ${first.path}`;
     node.threads.push(thread);
   }
   // Local drafts, not yet staged on GitHub.
@@ -695,7 +695,8 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     node.prNumber = /^pr-(\d+)$/.exec(entry.id) ? Number(/^pr-(\d+)$/.exec(entry.id)![1]) : node.prNumber;
     this.emitter.fire(undefined);
     this.expanded = node;
-    await view.reveal(node, { expand: true, select: true, focus: true });
+    // Not awaited: whoever opened the row (blame, the CLI) is waiting on its diff, not the tree.
+    void view.reveal(node, { expand: true, select: true, focus: true }).then(undefined, () => undefined);
   }
 
   closeAdHoc(node: WorktreeNode) {
@@ -820,7 +821,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   }
 
   /** Inline review comments for a PR row (or a branch that has one), rendered as comment threads. */
-  private async loadComments(node: WorktreeNode) {
+  private async loadComments(node: WorktreeNode, fresh = false) {
     if (!vscode.workspace.getConfiguration('crosscut').get<boolean>('showPrComments', true)) return;
     // The right side is a synthetic commit, so review comments on the real head have nowhere to land.
     if (this.modeFor(node).startsWith('rebase:')) return;
@@ -833,7 +834,13 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       node.webUrl ??= pr?.url;
     }
     if (!node.prNumber) return;
-    const [inline, reviews] = await Promise.all([prComments(main, node.prNumber), prReviews(main, node.prNumber)]);
+    const [published, pending, reviews] = await Promise.all([
+      prComments(main, node.prNumber),
+      pendingComments(main, node.prNumber, fresh),
+      prReviews(main, node.prNumber),
+    ]);
+    const seen = new Set(published.map((c) => c.id));
+    const inline = [...published, ...pending.filter((c) => !seen.has(c.id))];
     node.reviews = reviews.filter((r) => r.body?.trim());
     node.inlineComments = inline;
     node.details ??= await prDetails(main, node.prNumber);
@@ -989,16 +996,20 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
    * "Open All Changes" on a collapsed row: make it the expanded one first (so the accordion and the
    * file watcher follow), wait for its diff, then open.
    */
-  async openAll(node: WorktreeNode | FolderNode | SubmoduleNode, view: vscode.TreeView<Node>, reveal?: string) {
-    if (node instanceof WorktreeNode) {
-      if (node !== this.expanded) {
-        await view.reveal(node, { expand: true, select: true, focus: false });
-        await this.onExpand(node, view); // no-op if the reveal's expand event already did it
-      }
-      if (node.stale || !node.diff) await this.reload(node);
+  async openAll(node: WorktreeNode | FolderNode | SubmoduleNode, view: vscode.TreeView<Node>) {
+    if (node instanceof WorktreeNode) await this.ready(node, view);
+    await openAll(node);
+  }
+
+  /** Make a row the expanded one (so the accordion and the file watcher follow) and wait for its diff. */
+  private async ready(node: WorktreeNode, view: vscode.TreeView<Node>) {
+    if (node !== this.expanded) {
+      // The tree catching up (scrolling to the row, collapsing the previous one) is cosmetic; the
+      // diff does not wait for it. onExpand marks the row expanded before its first await.
+      void view.reveal(node, { expand: true, select: true, focus: false }).then(undefined, () => undefined);
+      void this.onExpand(node, view); // no-op if the reveal's expand event already did it
     }
-    const files = collectFiles(node instanceof WorktreeNode ? node.tree : node.children);
-    await openAll(node, reveal ? files.find((f) => f.absPath === reveal) : undefined);
+    if (node.stale || !node.diff) await this.reload(node);
   }
 
   /** The repos in the tree, for the CLI to find the window showing its repo. */
@@ -1022,17 +1033,83 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     } else {
       node = this.nodes.get(req.worktree);
     }
+    if (!node && req.ref?.startsWith('pr/')) {
+      return { ok: false, message: `#${req.ref.slice(3)} is not under Open pull requests: it is not open, or its branch is not fetched` };
+    }
     if (!node) return { ok: false, message: `no row for ${req.ref ?? req.worktree} in the Crosscut tree` };
     if (req.mode === 'uncommitted' && node.ref) return { ok: false, message: 'a branch has no uncommitted changes' };
     if (req.mode && req.mode !== this.modeFor(node)) {
       await this.state.update(`mode:${node.key}`, req.mode);
       node.stale = true;
     }
-    const reveal = req.file && path.join(node.ref ? node.wt.path : req.worktree, req.file);
-    await this.openAll(node, view, reveal);
+    await this.ready(node, view);
     if (node.error) return { ok: false, message: node.error };
-    const n = node.diff ? countFiles(node.diff) : 0;
-    return { ok: true, message: `opened ${n} file${n === 1 ? '' : 's'}, ${node.baseLabel}` };
+    // A review staged since the row loaded (the usual reason to present a PR) must show up, but it
+    // is several GitHub round trips: fetch it alongside opening the diff rather than before it.
+    // Threads attach to the diff's documents by URI, so they appear whenever the fetch lands.
+    void this.loadComments(node, true).catch((e) => log.warn(`comments for ${nodeName(node)}: ${e}`));
+
+    // Specs name repo-relative paths, a folder standing for everything under it.
+    const root = node.ref ? node.wt.path : req.worktree;
+    const files = collectFiles(node.tree);
+    const matching = (spec: PresentSpec) => {
+      const abs = path.join(root, spec.path);
+      return files.filter((f) => f.absPath === abs || f.absPath.startsWith(abs + path.sep));
+    };
+    const toRange = (lines?: [number, number]) => lines && new vscode.Range(lines[0] - 1, 0, lines[1] - 1, 0);
+    const missing = [...(req.only ?? []), ...(req.mark ?? []), ...(req.open ? [req.open] : []), ...(req.file ? [req.file] : [])]
+      .filter((spec) => !matching(spec).length)
+      .map((spec) => spec.path);
+    if (missing.length) return { ok: false, message: `not changed in ${node.baseLabel}: ${missing.join(', ')}` };
+
+    // Highlight every requested range; a later present replaces the earlier highlights.
+    presentedLines.clear();
+    const ranged = [...(req.only ?? []), ...(req.mark ?? []), ...(req.open ? [req.open] : []), ...(req.file ? [req.file] : [])].filter(
+      (spec) => spec.lines,
+    );
+    for (const spec of ranged) {
+      for (const f of matching(spec)) {
+        const { right } = await diffSides(f);
+        const key = right.toString();
+        presentedLines.set(key, [...(presentedLines.get(key) ?? []), toRange(spec.lines)!]);
+      }
+    }
+
+    // The multi-file editor does not land reliably on a line range (it folds unchanged lines, and
+    // stops short or at the top of the file), so a single file with lines goes to the ordinary diff
+    // editor, which does. That is also every per-finding link.
+    const single = !req.open && req.only?.length === 1 && req.only[0].lines && matching(req.only[0]).length === 1 ? req.only[0] : undefined;
+    const open = req.open ?? single;
+    if (open) {
+      const [f] = matching(open);
+      await openDiff(f);
+      const range = toRange(open.lines);
+      const ed = vscode.window.activeTextEditor;
+      if (range && ed) {
+        ed.selection = new vscode.Selection(range.start, range.start);
+        // Centred, a range taller than the view loses its top; pin those to the top instead, with
+        // a few lines of context above.
+        const visible = ed.visibleRanges[0];
+        const height = visible ? visible.end.line - visible.start.line : 30;
+        if (range.end.line - range.start.line + 6 > height) {
+          ed.revealRange(new vscode.Range(Math.max(0, range.start.line - 3), 0, range.start.line, 0), vscode.TextEditorRevealType.AtTop);
+        } else {
+          ed.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+        }
+      }
+      highlightPresented();
+      return { ok: true, message: `opened ${f.change.path}, ${node.baseLabel}` };
+    }
+
+    const only = req.only && [...new Set(req.only.flatMap(matching))];
+    // Scroll to --file if given, else to the first spec that names lines.
+    const first = req.file ?? req.mark?.[0] ?? ranged[0];
+    const reveal = first && matching(first)[0];
+    // Scroll to the file, not the lines: the multi-file editor misplaces a line range.
+    await openAll(node, reveal, { only });
+    highlightPresented();
+    const n = only?.length ?? files.length;
+    return { ok: true, message: `opened ${n} file${n === 1 ? '' : 's'}${only ? ` of ${files.length}` : ''}, ${node.baseLabel}` };
   }
 
   private repoOf(node: WorktreeNode): string | undefined {
@@ -1561,12 +1638,20 @@ function collectFiles(nodes: Child[], out: FileNode[] = []): FileNode[] {
 }
 
 /** All changes under a worktree, folder or submodule in one multi-file diff editor. */
-async function openAll(node: WorktreeNode | FolderNode | SubmoduleNode, reveal?: FileNode) {
-  const files = collectFiles(node instanceof WorktreeNode ? node.tree : node.children);
+async function openAll(
+  node: WorktreeNode | FolderNode | SubmoduleNode,
+  reveal?: FileNode,
+  opts: { only?: FileNode[]; range?: vscode.Range } = {},
+) {
+  const every = collectFiles(node instanceof WorktreeNode ? node.tree : node.children);
+  const files = opts.only ? every.filter((f) => opts.only!.includes(f)) : every;
   if (!files.length) return;
   const owner = files[0].owner;
   const branch = owner.ref?.short ?? owner.wt.branch ?? path.basename(owner.wt.path);
-  const scope = node instanceof WorktreeNode ? '' : ` ${node instanceof FolderNode ? node.rel : node.change.path}`;
+  // A subset is its own editor (owner differs), so it neither replaces nor is replaced by the full one.
+  const scope =
+    (node instanceof WorktreeNode ? '' : ` ${node instanceof FolderNode ? node.rel : node.change.path}`) +
+    (opts.only ? ` — ${files.length} of ${every.length} files` : '');
   // Files with review comments first: the multi-file view is long, and they are what you came for.
   files.sort((a, b) => (owner.commentCounts.get(b.change.path) ?? 0) - (owner.commentCounts.get(a.change.path) ?? 0));
   const resources = await Promise.all(
@@ -1605,10 +1690,28 @@ async function openAll(node: WorktreeNode | FolderNode | SubmoduleNode, reveal?:
   // later (goToFileInAll), and reopening the same source URI reuses the editor instead of stacking tabs.
   const at = reveal && all.files[files.indexOf(reveal)]?.right;
   try {
-    await openMultiDiff(all, at);
+    await openMultiDiff(all, at, opts.range);
   } catch (e) {
     log.warn(`_workbench.openMultiDiffEditor failed, falling back to vscode.changes: ${e}`);
     await vscode.commands.executeCommand('vscode.changes', title, resources);
+  }
+}
+
+// Line ranges handed over by `crosscut present`, highlighted wherever the file's right side shows —
+// the multi-file editor's embedded editors included, which appear only as they scroll into view.
+const presentedLines = new Map<string, vscode.Range[]>(); // right-side URI -> ranges
+let presentedDecoration: vscode.TextEditorDecorationType | undefined;
+
+function highlightPresented() {
+  presentedDecoration ??= vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    backgroundColor: new vscode.ThemeColor('editor.rangeHighlightBackground'),
+    overviewRulerColor: new vscode.ThemeColor('editorOverviewRuler.rangeHighlightForeground'),
+    overviewRulerLane: vscode.OverviewRulerLane.Full,
+  });
+  for (const ed of vscode.window.visibleTextEditors) {
+    const ranges = presentedLines.get(ed.document.uri.toString());
+    if (ranges) ed.setDecorations(presentedDecoration, ranges);
   }
 }
 
@@ -1635,6 +1738,7 @@ function serveCli(provider: WorktreeDiffsProvider, view: vscode.TreeView<Node>):
       folders: (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
       commonDirs: provider.commonDirs(),
       focusedAt,
+      uriScheme: vscode.env.uriScheme,
     };
     const text = JSON.stringify(entry);
     if (text === written) return; // tree redraws are frequent; the entry rarely changes
@@ -1651,7 +1755,7 @@ function serveCli(provider: WorktreeDiffsProvider, view: vscode.TreeView<Node>):
       let reply: PresentResponse;
       try {
         const req = JSON.parse(buf.slice(0, nl)) as PresentRequest;
-        log.info(`cli: present ${req.ref ?? req.worktree}${req.mode ? ` as ${req.mode}` : ''}${req.file ? ` at ${req.file}` : ''}`);
+        log.info(`cli: present ${req.ref ?? req.worktree}${req.mode ? ` as ${req.mode}` : ''}${req.open ? ` open ${req.open.path}` : ''}${req.only ? ` only ${req.only.length}` : ''}`);
         reply = await provider.present(req, view);
       } catch (e) {
         reply = { ok: false, message: e instanceof Error ? e.message : String(e) };
@@ -1682,16 +1786,24 @@ function serveCli(provider: WorktreeDiffsProvider, view: vscode.TreeView<Node>):
 
 /**
  * Put `crosscut` on the PATH as a wrapper that runs this extension's CLI with the extension host's
- * own node, so it works where no node is installed. Rewritten on every activation once it exists,
- * so it follows extension updates.
+ * own node, so it works where no node is installed. Done on every activation (unless
+ * `crosscut.installCli` is off), which also keeps it pointing at the current extension version.
+ * A `crosscut` this extension did not write is never overwritten automatically.
  */
 async function installCli(context: vscode.ExtensionContext, explicit: boolean) {
+  if (!explicit && !vscode.workspace.getConfiguration('crosscut').get<boolean>('installCli', true)) return;
   const bin = path.join(require('os').homedir(), '.local', 'bin', 'crosscut');
-  if (!explicit && !(await fs.stat(bin).then(() => true, () => false))) return;
-  const script = `#!/bin/sh\n# Written by the Crosscut VS Code extension.\nexec "${process.execPath}" "${path.join(context.extensionPath, 'out', 'cli.js')}" "$@"\n`;
-  if ((await fs.readFile(bin, 'utf8').catch(() => '')) === script) return;
+  const marker = '# Written by the Crosscut VS Code extension.';
+  const script = `#!/bin/sh\n${marker}\nexec "${process.execPath}" "${path.join(context.extensionPath, 'out', 'cli.js')}" "$@"\n`;
+  const existing = await fs.readFile(bin, 'utf8').catch(() => undefined);
+  if (existing === script) return;
+  if (existing !== undefined && !existing.includes(marker) && !explicit) {
+    log.warn(`not installing the crosscut CLI: ${bin} exists and was not written by this extension`);
+    return;
+  }
   await fs.mkdir(path.dirname(bin), { recursive: true });
   await fs.writeFile(bin, script, { mode: 0o755 });
+  log.info(`installed the crosscut CLI at ${bin}`);
   if (explicit) void vscode.window.showInformationMessage(`Installed ${bin}. Try: crosscut present`);
 }
 
@@ -1709,12 +1821,20 @@ function updateAllChangesContext() {
   void vscode.commands.executeCommand('setContext', 'crosscut.allChangesActive', !!label && allChanges.has(label));
 }
 
-function openMultiDiff(all: AllChanges, reveal?: vscode.Uri) {
+function openMultiDiff(all: AllChanges, reveal?: vscode.Uri, range?: vscode.Range) {
   return vscode.commands.executeCommand('_workbench.openMultiDiffEditor', {
     title: all.title,
     multiDiffSourceUri: all.source,
     resources: all.files.map((f) => ({ originalUri: f.left, modifiedUri: f.right })),
-    reveal: reveal && { modifiedUri: reveal },
+    reveal: reveal && {
+      modifiedUri: reveal,
+      range: range && {
+        startLineNumber: range.start.line + 1,
+        startColumn: 1,
+        endLineNumber: range.end.line + 1,
+        endColumn: 1,
+      },
+    },
   });
 }
 
@@ -2251,10 +2371,90 @@ export function activate(context: vscode.ExtensionContext) {
   void installCli(context, false).catch((e) => log.warn(`crosscut cli: ${e}`));
   const view = vscode.window.createTreeView('crosscut', { treeDataProvider: provider, showCollapseAll: true });
 
+  const followedLinkFiles = new Map<string, number>(); // link file -> when it was last followed
+
+  /** Run a `.crosscut-link` file however it came to be opened, then close every tab showing it. */
+  const followLinkFile = async (uri: vscode.Uri, via: string) => {
+    if (uri.scheme !== 'file' || !uri.path.endsWith('.crosscut-link')) return;
+    // One click can raise several of the events that lead here; follow the link once.
+    const last = followedLinkFiles.get(uri.fsPath);
+    if (last && Date.now() - last < 2000) return;
+    followedLinkFiles.set(uri.fsPath, Date.now());
+    log.info(`link file opened (${via}): ${uri.fsPath}`);
+    const tabs = vscode.window.tabGroups.all
+      .flatMap((g) => g.tabs)
+      .filter((t) => t.input instanceof vscode.TabInputText && t.input.uri.fsPath === uri.fsPath);
+    if (tabs.length) await vscode.window.tabGroups.close(tabs).then(undefined, () => undefined);
+    // The request sits beside the link file; links made before that held it in the file itself.
+    const sidecar = uri.fsPath.replace(/\.crosscut-link$/, '.json');
+    const text = (await fs.readFile(sidecar, 'utf8').catch(() => '')) || (await fs.readFile(uri.fsPath, 'utf8').catch(() => ''));
+    await followLink(() => JSON.parse(text));
+  };
+
+  /** Run a link's request here, or in the window showing its repo: VS Code picks the focused window. */
+  const followLink = async (parse: () => PresentRequest) => {
+    try {
+      const req = parse();
+      const other = provider.commonDirs().includes(req.commonDir)
+        ? undefined
+        : (await windowsFor(req.commonDir, req.worktree)).find((w) => w.pid !== process.pid);
+      log.info(`link: present ${req.ref ?? req.worktree}${other ? ` via window ${other.pid}` : ''}`);
+      const t = performance.now();
+      if (!other && !provider.commonDirs().includes(req.commonDir)) {
+        void vscode.window.showWarningMessage(`Crosscut link: open ${path.basename(req.worktree)} in a VS Code window first — no window is showing it.`);
+        return;
+      }
+      const reply = other ? await send(other.socket, req) : await provider.present(req, view);
+      log.info(`link: ${reply.ok ? 'opened' : 'failed'} in ${(performance.now() - t).toFixed(0)}ms`);
+      if (!reply.ok) void vscode.window.showWarningMessage(`Crosscut link: ${reply.message}`);
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Crosscut link: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
   context.subscriptions.push(
     provider,
     view,
     serveCli(provider, view),
+    // `crosscut link` links: the same request `present` sends over the socket, carried in the URI.
+    // `crosscut link` links: the same request `present` sends over the socket, carried in the URI.
+    vscode.window.registerUriHandler({
+      async handleUri(uri) {
+        log.info(`uri: ${uri.path} (${uri.query.length} bytes of query)`);
+        if (uri.path !== '/present') {
+          void vscode.window.showWarningMessage(`Crosscut link: unknown path ${uri.path}`);
+          return;
+        }
+        await followLink(() => JSON.parse(new URLSearchParams(uri.query).get('q') ?? ''));
+      },
+    }),
+    // `crosscut link --chat` links: a file holding the request, since chat panels open file links
+    // but not vscode:// ones. Opening the file runs it, and the tab closes itself. Chat panels open
+    // their links in the text editor explicitly, which skips the custom editor below, so text tabs
+    // on these files are caught as they open, too.
+    vscode.window.tabGroups.onDidChangeTabs((e) => {
+      // A preview tab reused for the file arrives as a change, not an open.
+      for (const tab of [...e.opened, ...e.changed]) {
+        if (tab.input instanceof vscode.TabInputText) void followLinkFile(tab.input.uri, 'tab');
+      }
+    }),
+    // Clicking a link whose file is already open in a tab only focuses that tab, which the tab
+    // events may not report; the active editor changing does.
+    vscode.window.onDidChangeActiveTextEditor((ed) => ed && void followLinkFile(ed.document.uri, 'editor')),
+    vscode.workspace.onDidOpenTextDocument((doc) => void followLinkFile(doc.uri, 'document')),
+    vscode.window.registerCustomEditorProvider(
+      'crosscut.link',
+      {
+        async resolveCustomTextEditor(document, panel) {
+          panel.webview.html = '<p style="font-family: sans-serif">Opening in Crosscut…</p>';
+          const sidecar = document.uri.fsPath.replace(/\.crosscut-link$/, '.json');
+          const text = (await fs.readFile(sidecar, 'utf8').catch(() => '')) || document.getText();
+          await followLink(() => JSON.parse(text));
+          panel.dispose();
+        },
+      },
+      { supportsMultipleEditorsPerDocument: true },
+    ),
     view.onDidExpandElement((e) => {
       log.info(`expand ${nodeName(e.element)}`);
       return provider.onExpand(e.element, view);
@@ -2280,6 +2480,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('crosscut.openAll', (node: WorktreeNode | FolderNode | SubmoduleNode) => provider.openAll(node, view)),
     vscode.commands.registerCommand('crosscut.goToFileInAll', goToFileInAll),
     vscode.commands.registerCommand('crosscut.openInAll', openInAll),
+    vscode.window.onDidChangeVisibleTextEditors(() => presentedLines.size && highlightPresented()),
     vscode.commands.registerCommand('crosscut.installCli', () =>
       installCli(context, true).catch((e) => vscode.window.showErrorMessage(`Could not install crosscut: ${e}`)),
     ),

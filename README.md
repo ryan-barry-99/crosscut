@@ -70,10 +70,12 @@ A summary with no comments is a valid review. GitHub does not let you approve yo
 
 ## Command line
 
-**Crosscut: Install 'crosscut' Command-Line Tool** writes `~/.local/bin/crosscut`, which runs with the extension host's own node and is kept current across extension updates.
+The extension installs `~/.local/bin/crosscut` when it starts (turn off with `crosscut.installCli`), a wrapper that runs with the extension host's own node and follows extension updates. It never overwrites a `crosscut` it did not write; **Crosscut: Install 'crosscut' Command-Line Tool** forces it.
 
 - `crosscut present [--vs <rev> | --rebase <rev> | --uncommitted | --last <n> | --branch] [--ref <branch>] [--file <path>]` opens the current worktree's changes (or a branch's) in the VS Code window showing the repo, as one multi-file diff. A comparison flag also becomes the row's comparison in the tree. Meant for agents: run it from a terminal to show someone a change against the right base.
 - `crosscut present --commit <rev>` or `crosscut present <from>..<to>` (`...` for the merge-base) opens a commit or range as its own row under **Opened commits & PRs**; `--title` names it. An agent can show what a session did by noting `HEAD` at the start and presenting `<start>..HEAD` at the end.
+- Any `present` form can be narrowed to files. A spec is a path (a folder covers everything under it), optionally with lines on the new side: `path:12` or `path:12-30`. `--only <spec>...` shows just those files with their lines highlighted, `--open <spec>` opens one file in its own side-by-side diff at those lines, and `--file <spec>` scrolls the full view to it. Presenting review findings is one command: `crosscut present --branch --only src/a.ts:40-52 src/b.ts:7`.
+- `crosscut link <present arguments> [--text <label>]` prints a `vscode://` link that does what that `present` would when clicked: in the terminal, a markdown preview, or an agent's chat reply. `--text` prints it as a markdown link. Everything is resolved when the link is made, so it keeps pointing at the same commits.
 - `crosscut base [<tip>]` prints the branch `<tip>` is stacked on, or the base branch, and the merge-base.
 - `crosscut rebase-preview <onto> [<tip>] [--json]` lists the files a rebase would conflict on and the commits responsible, without touching anything. Exits 1 when it would conflict.
 

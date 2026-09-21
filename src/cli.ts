@@ -1,10 +1,10 @@
 // `crosscut` on the command line: the git logic the extension uses, plus a way to open a diff in
 // the VS Code window that shows this repo — meant for agents as much as people.
-import { promises as fs } from 'fs';
-import * as net from 'net';
 import * as path from 'path';
 import { detectBaseBranch, git, mergeBase, previewRebase, repoCommonDir, stackCandidates } from './git';
-import { PresentRequest, PresentResponse, WindowEntry, windowsDir } from './ipc';
+import { createHash } from 'crypto';
+import { promises as fs } from 'fs';
+import { EXTENSION_ID, PresentRequest, PresentSpec, linksDir, send, windowsFor } from './ipc';
 
 const USAGE = `usage: crosscut <command> [options]
 
@@ -14,12 +14,34 @@ const USAGE = `usage: crosscut <command> [options]
       tree; without one the row keeps whatever it has. --file scrolls to that file.
       --vs diffs against the merge-base with <rev>; --rebase previews rebasing onto it.
 
+  present --pr <n> [--only <spec>... | --open <spec>]
+      The pull request's row under Open pull requests, diffed against the branch it targets, with
+      its review comments inline — your pending (unsubmitted) review included, marked pending.
+      The PR's branch must be fetched.
+
   present --commit <rev> [--title <text>] [--file <path>]
   present <from>..<to> | <from>...<to> [--title <text>] [--file <path>]
       Open one commit (against its parent), or <to> against <from> (".." compares the two
       directly, "..." against their merge-base, as git diff does), as a row of its own.
       To show what a session did: note HEAD at the start, then present <start>..HEAD
       --title "what it was for".
+
+  Narrowing any of the above to particular files. A <spec> is a path (a folder means everything
+  under it), optionally with the lines it is about on the new side: path:12 or path:12-30.
+      --only <spec>...   only these files, their lines highlighted (one file with lines opens
+                         in the single-file diff at them)
+      --mark <spec>...   the full diff, these lines highlighted, scrolled to the first file
+      --open <spec>      that one file in its own side-by-side diff editor, at those lines
+      --file <spec>      scroll to that file (and its lines) in the full view
+  e.g. present findings:  crosscut present --branch --only src/a.ts:40-52 src/b.ts:7
+
+  link <any present arguments> [--text <label>] [--chat]
+      Print a vscode:// link that does what that present would, when clicked in a terminal or a
+      markdown preview. With --text, print it as a markdown link.
+      --chat prints a markdown link to a small file instead, for chat panels that open file links
+      but not vscode:// ones (the Claude Code panel): opening the file runs it. Label defaults to
+      the file and lines it points at.
+      e.g.  crosscut link --pr 381 --open util/gui/api_command_gui.cpp:309 --text "the drain loop"
 
   base [<tip>]
       Print what <tip> (default HEAD) should be diffed against: the branch it is stacked on if
@@ -36,9 +58,17 @@ function fail(message: string): never {
   process.exit(2);
 }
 
-/** `--name value` flags and positionals; boolean flags are listed so they don't eat an argument. */
-function parse(argv: string[], booleans: string[]): { flags: Map<string, string | true>; rest: string[] } {
+/**
+ * `--name value` flags and positionals; boolean flags are listed so they don't eat an argument, and
+ * list flags take every value up to the next flag (and may repeat).
+ */
+function parse(
+  argv: string[],
+  booleans: string[],
+  lists: string[] = [],
+): { flags: Map<string, string | true>; lists: Map<string, string[]>; rest: string[] } {
   const flags = new Map<string, string | true>();
+  const listed = new Map<string, string[]>();
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -48,10 +78,26 @@ function parse(argv: string[], booleans: string[]): { flags: Map<string, string 
     }
     const name = a.slice(2);
     if (booleans.includes(name)) flags.set(name, true);
-    else if (i + 1 < argv.length) flags.set(name, argv[++i]);
+    else if (lists.includes(name)) {
+      const values = listed.get(name) ?? [];
+      while (i + 1 < argv.length && !argv[i + 1].startsWith('--')) values.push(argv[++i]);
+      if (!values.length) fail(`--${name} needs at least one value`);
+      listed.set(name, values);
+    } else if (i + 1 < argv.length) flags.set(name, argv[++i]);
     else fail(`--${name} needs a value`);
   }
-  return { flags, rest };
+  return { flags, lists: listed, rest };
+}
+
+/** `path`, `path:12` or `path:12-30`, with the path made repo-relative. */
+function spec(root: string, cwd: string, text: string): PresentSpec {
+  const m = /^(.*?):(\d+)(?:-(\d+))?$/.exec(text);
+  const file = m ? m[1] : text;
+  const lines: [number, number] | undefined = m ? [Number(m[2]), Number(m[3] ?? m[2])] : undefined;
+  if (lines && (lines[0] < 1 || lines[1] < lines[0])) fail(`bad line range in ${text}`);
+  const rel = path.relative(root, path.resolve(cwd, file)).split(path.sep).join('/');
+  if (rel.startsWith('..')) fail(`${file} is outside the repository`);
+  return { path: rel || '.', lines };
 }
 
 async function toplevel(cwd: string): Promise<string> {
@@ -137,46 +183,12 @@ async function rebasePreview(argv: string[]) {
   process.exit(p.conflicts.length ? 1 : 0);
 }
 
-/** Every live window; entries whose socket no longer answers are removed on the way. */
-async function windows(): Promise<WindowEntry[]> {
-  const dir = windowsDir();
-  const names = await fs.readdir(dir).catch(() => [] as string[]);
-  const out: WindowEntry[] = [];
-  for (const n of names.filter((x) => x.endsWith('.json'))) {
-    const entry = await fs.readFile(path.join(dir, n), 'utf8').then((t) => JSON.parse(t) as WindowEntry, () => undefined);
-    if (!entry) continue;
-    try {
-      process.kill(entry.pid, 0);
-      out.push(entry);
-    } catch {
-      await fs.rm(path.join(dir, n), { force: true });
-      await fs.rm(entry.socket, { force: true });
-    }
+/** The `present` arguments, resolved into the request the extension acts on. */
+async function presentRequest(argv: string[], extra: string[] = []): Promise<{ req: PresentRequest; flags: Map<string, string | true> }> {
+  const { flags, lists, rest } = parse(argv, ['uncommitted', 'branch', 'chat'], ['only', 'mark']);
+  for (const f of flags.keys()) {
+    if (!['vs', 'rebase', 'uncommitted', 'last', 'branch', 'commit', 'title', 'ref', 'pr', 'file', 'open', ...extra].includes(f)) fail(`unknown option --${f}`);
   }
-  return out;
-}
-
-function send(socket: string, req: PresentRequest): Promise<PresentResponse> {
-  return new Promise((resolve, reject) => {
-    const conn = net.createConnection(socket);
-    let buf = '';
-    conn.setEncoding('utf8');
-    conn.setTimeout(120_000, () => conn.destroy(new Error('timed out waiting for VS Code')));
-    conn.on('connect', () => conn.write(JSON.stringify(req) + '\n'));
-    conn.on('data', (d) => (buf += d));
-    conn.on('end', () => {
-      try {
-        resolve(JSON.parse(buf) as PresentResponse);
-      } catch {
-        reject(new Error(`bad reply from VS Code: ${buf}`));
-      }
-    });
-    conn.on('error', reject);
-  });
-}
-
-async function present(argv: string[]) {
-  const { flags, rest } = parse(argv, ['uncommitted', 'branch']);
   const cwd = process.cwd();
   const root = await toplevel(cwd);
   const commonDir = await repoCommonDir(cwd);
@@ -188,8 +200,9 @@ async function present(argv: string[]) {
   const modes = ['vs', 'rebase', 'uncommitted', 'last', 'branch'].filter((f) => flags.has(f)).map((f) => `--${f}`);
   const own = [...(range ? [range] : []), ...(flags.has('commit') ? ['--commit'] : [])];
   if (modes.length > 1) fail(`${modes.join(', ')} are alternatives; pass one`);
-  if (own.length > 1 || (own.length && (modes.length || flags.has('ref')))) {
-    fail(`${[...own, ...modes, ...(flags.has('ref') ? ['--ref'] : [])].join(' and ')} cannot be combined`);
+  const row = ['ref', 'pr'].filter((f) => flags.has(f)).map((f) => `--${f}`);
+  if (own.length > 1 || (own.length && (modes.length || row.length))) {
+    fail(`${[...own, ...modes, ...row].join(' and ')} cannot be combined`);
   }
   if (flags.has('title') && !own.length) fail('--title names a commit or range row; pass --commit or <from>..<to>');
   const commit = range ? await adHoc(cwd, range, false) : flags.has('commit') ? await adHoc(cwd, String(flags.get('commit')), true) : undefined;
@@ -204,18 +217,59 @@ async function present(argv: string[]) {
     const sha = await git(cwd, ['rev-parse', '--verify', `HEAD~${n}`]).catch(() => fail(`HEAD has fewer than ${n} commits`));
     mode = `commit:${sha.trim()}`;
   }
-  const ref = flags.has('ref') ? await fullRef(cwd, String(flags.get('ref'))) : undefined;
-  const file = flags.has('file') ? path.relative(root, path.resolve(cwd, String(flags.get('file')))).split(path.sep).join('/') : undefined;
+  if (flags.has('pr') && flags.has('ref')) fail('--pr and --ref both pick the row; pass one');
+  const pr = flags.has('pr') ? Number(flags.get('pr')) : undefined;
+  if (pr !== undefined && !(Number.isInteger(pr) && pr > 0)) fail('--pr needs a pull request number');
+  // Open pull requests rows are keyed pr/<n>, not by a refname.
+  const ref = pr ? `pr/${pr}` : flags.has('ref') ? await fullRef(cwd, String(flags.get('ref'))) : undefined;
+  const file = flags.has('file') ? spec(root, cwd, String(flags.get('file'))) : undefined;
+  const swallowed = [...(lists.get('only') ?? []), ...(lists.get('mark') ?? [])].find((t) => /\.\./.test(t) && !t.startsWith('../') && !t.includes('/../'));
+  if (swallowed) fail(`${swallowed} after --only reads as a file; put the range before --only / --mark`);
+  const only = lists.get('only')?.map((t) => spec(root, cwd, t));
+  const mark = lists.get('mark')?.map((t) => spec(root, cwd, t));
+  const open = flags.has('open') ? spec(root, cwd, String(flags.get('open'))) : undefined;
+  if (mark && only) fail('--mark highlights in the full diff and --only narrows it; pass one');
+  if (open && (only || file || mark)) fail('--open shows one file on its own; it cannot be combined with --only, --mark or --file');
 
-  const all = (await windows()).filter((w) => w.commonDirs.includes(commonDir));
-  if (!all.length) fail(`no VS Code window with the Crosscut view is showing ${root}`);
-  // The window whose workspace holds this directory, else the one focused last.
-  const inside = (w: WindowEntry) => w.folders.some((f) => cwd === f || cwd.startsWith(f + path.sep));
-  all.sort((a, b) => Number(inside(b)) - Number(inside(a)) || b.focusedAt - a.focusedAt);
+  return { req: { cmd: 'present', commonDir, worktree: root, ref, mode, file, commit, only, mark, open }, flags };
+}
 
-  const reply = await send(all[0].socket, { cmd: 'present', commonDir, worktree: root, ref, mode, file, commit });
+async function present(argv: string[]) {
+  const { req } = await presentRequest(argv);
+  const [win] = await windowsFor(req.commonDir, process.cwd());
+  if (!win) fail(`no VS Code window with the Crosscut view is showing ${req.worktree}`);
+  const reply = await send(win.socket, req);
   if (!reply.ok) fail(reply.message);
   process.stdout.write(`${reply.message}\n`);
+}
+
+/**
+ * The same request as a link: clicking it in a terminal, a markdown preview or a chat reply does
+ * what `present` would. Everything is resolved now (--last to a sha, a range to its commits), so
+ * the link keeps meaning the same thing after the branch moves.
+ */
+async function link(argv: string[]) {
+  const { req, flags } = await presentRequest(argv, ['text', 'chat']);
+  if (flags.has('chat')) {
+    // A file link, for chat panels that open files but drop vscode:// links. Named by content, so
+    // the same request always gets the same file and repeated links don't pile up new ones.
+    const body = JSON.stringify(req, null, 2);
+    const dir = linksDir();
+    const id = createHash('sha1').update(body).digest('hex').slice(0, 16);
+    const file = path.join(dir, `${id}.crosscut-link`);
+    await fs.mkdir(dir, { recursive: true });
+    // The chat opens the link file in a text tab for a moment before the extension closes it, so
+    // it holds a line worth flashing; the request itself sits beside it.
+    await fs.writeFile(path.join(dir, `${id}.json`), body);
+    await fs.writeFile(file, 'Opening in Crosscut…\n');
+    const spec = req.open ?? req.file ?? req.only?.[0] ?? req.mark?.[0];
+    const text = flags.has('text') ? String(flags.get('text')) : spec ? `${spec.path}${spec.lines ? `:${spec.lines[0]}${spec.lines[1] !== spec.lines[0] ? `-${spec.lines[1]}` : ''}` : ''}` : 'open diff';
+    process.stdout.write(`[${text.replace(/[[\]]/g, '\\$&')}](${file})\n`);
+    return;
+  }
+  const [win] = await windowsFor(req.commonDir, process.cwd());
+  const url = `${win?.uriScheme ?? 'vscode'}://${EXTENSION_ID}/present?q=${encodeURIComponent(JSON.stringify(req))}`;
+  process.stdout.write(flags.has('text') ? `[${String(flags.get('text')).replace(/[[\]]/g, '\\$&')}](${url})\n` : `${url}\n`);
 }
 
 async function main() {
@@ -223,6 +277,8 @@ async function main() {
   switch (cmd) {
     case 'present':
       return present(argv);
+    case 'link':
+      return link(argv);
     case 'base':
       return base(argv);
     case 'rebase-preview':
