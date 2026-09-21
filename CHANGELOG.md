@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.1
+
+- `crosscut present` can point at files and lines: `--mark` highlights lines in the full diff,
+  `--only` shows just some files, `--open` opens one file side by side at its lines.
+- `crosscut present --pr <n>` opens a pull request's row, and PR rows show your own pending
+  review inline, marked as not yet submitted.
+- `crosscut link` makes a clickable link that does what `present` would, opened in whichever
+  window shows the repo. `--chat` makes one that works in a chat panel, so an agent can give you
+  a table of review findings to click through.
+- The CLI installs itself when the extension starts (`crosscut.installCli` turns this off).
+
+### Fixed
+
+- A long line range opened with its top cut off; it now starts at the top of the view.
+- Opening a diff from the CLI waited on GitHub and on the tree scrolling first; it now opens in
+  well under a second.
+- The pending-review check only looked at the first 30 reviews on a pull request.
+
 ## 0.2.0
 
 - **Open pull requests** group: a row per open PR, diffed against the branch it targets, so a

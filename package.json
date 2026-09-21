@@ -2,7 +2,7 @@
   "name": "crosscut",
   "displayName": "Crosscut",
   "description": "Diffs across every git worktree, branch and pull request \u2014 with IntelliSense, blame and review comments.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "ryan-barry-99",
   "license": "MIT",
   "engines": {
