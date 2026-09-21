@@ -437,11 +437,10 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   private prCache = new Map<string, { at: number; value: Promise<Map<string, PrInfo>> }>();
   private opened = new Map<string, BranchGroupNode>(); // commonDir -> ad-hoc commits/PRs opened from a blame hover
   private prGroups = new Map<string, BranchGroupNode>(); // commonDir -> the open-pull-request rows
-  private expanded?: WorktreeNode; // only one worktree is expanded (and diffed/watched) at a time
+  private expanded = new Set<WorktreeNode>(); // rows open in the tree: diffed first, and worktrees watched
   private repoWatchers: vscode.Disposable[] = [];
   private repoWatchKey = '';
-  private expandedWatcher?: vscode.Disposable;
-  private expandedWatchPath?: string;
+  private expandedWatchers = new Map<string, vscode.Disposable>(); // worktree path -> its file watcher
   private pendingPaths = new Set<string>();
   private layout = '';
   private queue: WorktreeNode[] = [];
@@ -577,18 +576,21 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   }
 
   private async onExpandedFilesChanged() {
-    const node = this.expanded;
     const files = [...this.pendingPaths];
     this.pendingPaths.clear();
-    if (!node || node.ref || !files.length) return;
-    // Build output and other ignored files can't change the diff.
-    if (await allIgnored(node.wt.path, files.map((f) => path.relative(node.wt.path, f)))) return;
-    await this.reload(node);
+    for (const node of this.expanded) {
+      if (node.ref) continue;
+      const mine = files.filter((f) => f.startsWith(node.wt.path + path.sep));
+      if (!mine.length) continue;
+      // Build output and other ignored files can't change the diff.
+      if (await allIgnored(node.wt.path, mine.map((f) => path.relative(node.wt.path, f)))) continue;
+      await this.reload(node);
+    }
   }
 
-  /** Manual refresh: always re-diff the expanded worktree. */
+  /** Manual refresh: always re-diff every open row. */
   async refreshExpanded() {
-    if (this.expanded) await this.reload(this.expanded, true);
+    await Promise.all([...this.expanded].map((n) => this.reload(n, true)));
   }
 
   /** Re-diff a worktree and redraw it only if the set of changed files (or the base) moved. */
@@ -604,10 +606,9 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   }
 
   private pump() {
-    // The expanded row is the only one anybody is waiting on, so it never queues behind background
-    // refreshes — it starts even when every background slot is busy.
-    const i = this.expanded ? this.queue.indexOf(this.expanded) : -1;
-    if (i >= 0) {
+    // Open rows are the ones anybody is waiting on, so they never queue behind background refreshes
+    // — they start even when every background slot is busy.
+    for (let i = this.queue.findIndex((n) => this.expanded.has(n)); i >= 0; i = this.queue.findIndex((n) => this.expanded.has(n))) {
       const node = this.queue.splice(i, 1)[0];
       if (this.isLive(node)) {
         this.running++;
@@ -694,7 +695,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     node.webUrl = webUrl ?? node.webUrl;
     node.prNumber = /^pr-(\d+)$/.exec(entry.id) ? Number(/^pr-(\d+)$/.exec(entry.id)![1]) : node.prNumber;
     this.emitter.fire(undefined);
-    this.expanded = node;
+    this.expanded.add(node);
     // Not awaited: whoever opened the row (blame, the CLI) is waiting on its diff, not the tree.
     void view.reveal(node, { expand: true, select: true, focus: true }).then(undefined, () => undefined);
   }
@@ -705,7 +706,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       if (i < 0) continue;
       group.branches.splice(i, 1);
       this.branchNodes.delete(`${common}\0${node.ref!.ref}`);
-      if (node === this.expanded) this.expanded = undefined;
+      this.expanded.delete(node);
     }
     this.emitter.fire(undefined);
   }
@@ -949,12 +950,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     this.repos = repos;
     this.nodes = nodes;
     this.branchNodes = branchNodes;
-    if (this.expanded && !this.isLive(this.expanded)) {
-      // A row that did not survive a rebuild takes the accordion with it: the next expand sees no
-      // previous row and so collapses nothing, leaving two rows open.
-      log.info(`expanded row ${nodeName(this.expanded)} did not survive the rebuild; accordion reset`);
-      this.expanded = undefined;
-    }
+    for (const n of this.expanded) if (!this.isLive(n)) this.expanded.delete(n);
     this.rewatchRepos();
     this.rewatchExpanded();
 
@@ -970,44 +966,34 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     // submodules spent 42s of git work in an 8s window on window open, and an extension host busy
     // with that cannot paint the tree — rows stayed empty long after their diffs were ready.
     for (const node of [...created, ...moved]) {
-      if (node === this.expanded || (!node.ref && node.isCurrent)) this.enqueue(node);
+      if (this.expanded.has(node) || (!node.ref && node.isCurrent)) this.enqueue(node);
       else node.stale = true;
     }
     void this.linkPrs();
   }
 
-  async onExpand(node: Node, view: vscode.TreeView<Node>) {
-    if (!(node instanceof WorktreeNode) || node === this.expanded) return;
-    const previous = this.expanded;
-    this.expanded = node;
+  onExpand(node: Node) {
+    if (!(node instanceof WorktreeNode) || this.expanded.has(node)) return;
+    this.expanded.add(node);
     node.stale = true;
-    // Background refreshes for rows that are now collapsed only delay this one; they are marked
-    // stale already and re-diff whenever they are expanded again.
-    this.queue = this.queue.filter((n) => n === node);
     this.rewatchExpanded();
-    if (previous) {
-      // Accordion: VS Code has no per-item collapse API, so collapse all and re-reveal the new one.
-      await vscode.commands.executeCommand('workbench.actions.treeView.crosscut.collapseAll');
-      await view.reveal(node, { expand: true, select: false, focus: false });
-    }
   }
 
   /**
-   * "Open All Changes" on a collapsed row: make it the expanded one first (so the accordion and the
-   * file watcher follow), wait for its diff, then open.
+   * "Open All Changes" on a collapsed row: open it first (so its worktree is watched), wait for its
+   * diff, then open.
    */
   async openAll(node: WorktreeNode | FolderNode | SubmoduleNode, view: vscode.TreeView<Node>) {
     if (node instanceof WorktreeNode) await this.ready(node, view);
     await openAll(node);
   }
 
-  /** Make a row the expanded one (so the accordion and the file watcher follow) and wait for its diff. */
+  /** Open a row in the tree (so its worktree is watched) and wait for its diff. Other rows stay open. */
   private async ready(node: WorktreeNode, view: vscode.TreeView<Node>) {
-    if (node !== this.expanded) {
-      // The tree catching up (scrolling to the row, collapsing the previous one) is cosmetic; the
-      // diff does not wait for it. onExpand marks the row expanded before its first await.
+    if (!this.expanded.has(node)) {
+      // The tree catching up (scrolling to the row) is cosmetic; the diff does not wait for it.
       void view.reveal(node, { expand: true, select: true, focus: false }).then(undefined, () => undefined);
-      void this.onExpand(node, view); // no-op if the reveal's expand event already did it
+      this.onExpand(node); // no-op if the reveal's expand event already did it
     }
     if (node.stale || !node.diff) await this.reload(node);
   }
@@ -1082,7 +1068,8 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     const open = req.open ?? single;
     if (open) {
       const [f] = matching(open);
-      await openDiff(f);
+      await keepUserEditor();
+      await openDiff(f, { preview: false });
       const range = toRange(open.lines);
       const ed = vscode.window.activeTextEditor;
       if (range && ed) {
@@ -1106,7 +1093,8 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     const first = req.file ?? req.mark?.[0] ?? ranged[0];
     const reveal = first && matching(first)[0];
     // Scroll to the file, not the lines: the multi-file editor misplaces a line range.
-    await openAll(node, reveal, { only });
+    await keepUserEditor();
+    await openAll(node, reveal, { only, keepOthers: true });
     highlightPresented();
     const n = only?.length ?? files.length;
     return { ok: true, message: `opened ${n} file${n === 1 ? '' : 's'}${only ? ` of ${files.length}` : ''}, ${node.baseLabel}` };
@@ -1117,10 +1105,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   }
 
   onCollapse(node: Node) {
-    if (node === this.expanded) {
-      this.expanded = undefined;
-      this.rewatchExpanded();
-    }
+    if (node instanceof WorktreeNode && this.expanded.delete(node)) this.rewatchExpanded();
   }
 
   /** Returns whether anything visible changed. Concurrent calls for one node share a single load. */
@@ -1230,20 +1215,25 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     );
   }
 
-  /** Working-tree files of the expanded worktree only. Recreated only when that worktree changes. */
+  /** Working-tree files of each open worktree. A watcher lives exactly as long as its row is open. */
   private rewatchExpanded() {
-    const target = this.expanded && !this.expanded.ref ? this.expanded.wt.path : undefined;
-    if (target === this.expandedWatchPath) return;
-    this.expandedWatchPath = target;
-    this.expandedWatcher?.dispose();
-    this.expandedWatcher = undefined;
-    this.pendingPaths.clear();
-    if (!target) return;
-    this.expandedWatcher = watch(new vscode.RelativePattern(vscode.Uri.file(target), '**/*'), (uri) => {
-      const p = uri.fsPath;
-      if (p.includes(`${path.sep}node_modules${path.sep}`) || p.includes(`${path.sep}.git${path.sep}`) || p.endsWith(`${path.sep}.git`)) return;
-      this.scheduleExpandedRefresh(p);
-    });
+    const targets = new Set([...this.expanded].filter((n) => !n.ref).map((n) => n.wt.path));
+    for (const [p, w] of this.expandedWatchers) {
+      if (targets.has(p)) continue;
+      w.dispose();
+      this.expandedWatchers.delete(p);
+    }
+    for (const target of targets) {
+      if (this.expandedWatchers.has(target)) continue;
+      this.expandedWatchers.set(
+        target,
+        watch(new vscode.RelativePattern(vscode.Uri.file(target), '**/*'), (uri) => {
+          const p = uri.fsPath;
+          if (p.includes(`${path.sep}node_modules${path.sep}`) || p.includes(`${path.sep}.git${path.sep}`) || p.endsWith(`${path.sep}.git`)) return;
+          this.scheduleExpandedRefresh(p);
+        }),
+      );
+    }
   }
 
   getParent(node: Node): Node | undefined {
@@ -1322,7 +1312,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       const b = node.ref;
       const item = new vscode.TreeItem(
         b.short,
-        node === this.expanded ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed,
+        this.expanded.has(node) ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed,
       );
       const n = node.diff && countFiles(node.diff);
       const count = n === undefined ? '' : `${n} file${n === 1 ? '' : 's'} · `;
@@ -1383,7 +1373,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       const main = (node.parent instanceof RepoNode ? node.parent : this.repos[0])?.worktrees[0];
       const item = new vscode.TreeItem(
         path.basename(wt.path),
-        node === this.expanded ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed,
+        this.expanded.has(node) ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed,
       );
       const n = node.diff && countFiles(node.diff);
       const count = n === undefined ? '' : `${n} file${n === 1 ? '' : 's'} · `;
@@ -1473,7 +1463,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
 
   dispose() {
     this.repoWatchers.forEach((w) => w.dispose());
-    this.expandedWatcher?.dispose();
+    this.expandedWatchers.forEach((w) => w.dispose());
     clearTimeout(this.listTimer);
     clearTimeout(this.diffTimer);
   }
@@ -1611,7 +1601,7 @@ async function diffSides(node: FileNode): Promise<{ left: vscode.Uri; right: vsc
   return { left, right };
 }
 
-async function openDiff(node: FileNode) {
+async function openDiff(node: FileNode, opts: { preview?: boolean } = {}) {
   const { change, owner } = node;
   if (change.gitlink) {
     vscode.window.showInformationMessage(`${change.path} is a submodule that isn't checked out in this worktree, so only its pointer changed.`);
@@ -1622,10 +1612,21 @@ async function openDiff(node: FileNode) {
   const t1 = performance.now();
   const branch = owner.ref?.short ?? owner.wt.branch ?? path.basename(owner.wt.path);
   const title = `${path.basename(change.path)} [${branch}: ${owner.baseLabel}]`;
-  await vscode.commands.executeCommand('vscode.diff', left, right, title);
+  await vscode.commands.executeCommand('vscode.diff', left, right, title, opts.preview === false ? { preview: false } : undefined);
   log.info(
     `openDiff ${change.path}: sides ${(t1 - t0).toFixed(0)}ms, editor ${(performance.now() - t1).toFixed(0)}ms (left ${left.scheme})`,
   );
+}
+
+/**
+ * Before opening something the user did not click (the CLI, a link): pin the active tab if it is a
+ * preview, which the next editor opened in its group would otherwise replace. A diff opened from
+ * the tree with a single click is one, and it is usually what they are reading.
+ */
+async function keepUserEditor() {
+  if (vscode.window.tabGroups.activeTabGroup.activeTab?.isPreview) {
+    await vscode.commands.executeCommand('workbench.action.keepEditor').then(undefined, () => undefined);
+  }
 }
 
 function collectFiles(nodes: Child[], out: FileNode[] = []): FileNode[] {
@@ -1641,7 +1642,7 @@ function collectFiles(nodes: Child[], out: FileNode[] = []): FileNode[] {
 async function openAll(
   node: WorktreeNode | FolderNode | SubmoduleNode,
   reveal?: FileNode,
-  opts: { only?: FileNode[]; range?: vscode.Range } = {},
+  opts: { only?: FileNode[]; range?: vscode.Range; keepOthers?: boolean } = {},
 ) {
   const every = collectFiles(node instanceof WorktreeNode ? node.tree : node.children);
   const files = opts.only ? every.filter((f) => opts.only!.includes(f)) : every;
@@ -1678,7 +1679,8 @@ async function openAll(
   };
   // An editor this row opened under a different comparison is stale now; replace it rather than
   // leave two side by side.
-  for (const [t, other] of allChanges) {
+  // Not when opened from outside (the CLI, a link): that one may be what the user is reading.
+  for (const [t, other] of opts.keepOthers ? [] : allChanges) {
     if (other.owner !== all.owner || other.source.toString() === all.source.toString()) continue;
     allChanges.delete(t);
     const tabs = vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter((tab) => tab.label === t);
@@ -2457,7 +2459,7 @@ export function activate(context: vscode.ExtensionContext) {
     ),
     view.onDidExpandElement((e) => {
       log.info(`expand ${nodeName(e.element)}`);
-      return provider.onExpand(e.element, view);
+      provider.onExpand(e.element);
     }),
     view.onDidCollapseElement((e) => provider.onCollapse(e.element)),
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, new RefContentProvider()),
