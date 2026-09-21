@@ -16,6 +16,9 @@ export interface PrInfo {
   number: number;
   state: 'OPEN' | 'CLOSED' | 'MERGED';
   url: string;
+  title: string;
+  baseRef: string; // what the PR merges into, which for a stacked PR is not the default branch
+  headRef: string;
 }
 
 /**
@@ -28,7 +31,7 @@ export function prsByBranch(cwd: string, limit = 500): Promise<Map<string, PrInf
     execFile(
       'gh',
       ['api', '--paginate', `repos/{owner}/{repo}/pulls?state=all&per_page=100&sort=updated&direction=desc`, '--jq',
-       '.[] | {number, state: (if .merged_at then "MERGED" else (.state | ascii_upcase) end), headRefName: .head.ref, url: .html_url}'],
+       '.[] | {number, state: (if .merged_at then "MERGED" else (.state | ascii_upcase) end), headRefName: .head.ref, url: .html_url, title, baseRef: .base.ref}'],
       { cwd, timeout: 60000, maxBuffer: 64 * 1024 * 1024 },
       (err, stdout, stderr) => {
         if (err) {
@@ -40,13 +43,13 @@ export function prsByBranch(cwd: string, limit = 500): Promise<Map<string, PrInf
             .split('\n')
             .filter(Boolean)
             .slice(0, limit)
-            .map((l) => JSON.parse(l) as { number: number; state: PrInfo['state']; headRefName: string; url: string });
+            .map((l) => JSON.parse(l) as { number: number; state: PrInfo['state']; headRefName: string; url: string; title: string; baseRef: string });
           const map = new Map<string, PrInfo>();
           // rows are newest-first; keep the newest PR per branch, preferring a merged one
           for (const r of rows) {
             const prev = map.get(r.headRefName);
             if (!prev || (prev.state !== 'MERGED' && r.state === 'MERGED')) {
-              map.set(r.headRefName, { number: r.number, state: r.state, url: r.url });
+              map.set(r.headRefName, { number: r.number, state: r.state, url: r.url, title: r.title, baseRef: r.baseRef, headRef: r.headRefName });
             }
           }
           resolve(map);

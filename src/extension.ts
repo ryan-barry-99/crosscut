@@ -173,7 +173,9 @@ class RepoNode {
   constructor(readonly commonDir: string, readonly worktrees: WorktreeNode[], readonly groups: BranchGroupNode[]) {}
   get children(): Node[] {
     const opened = this.groups.filter((g) => g.kind === 'opened' && g.branches.length);
-    return [...opened, ...this.worktrees, ...this.groups.filter((g) => g.kind !== 'opened' && g.branches.length)];
+    const prs = this.groups.filter((g) => g.kind === 'prs' && g.branches.length);
+    const rest = this.groups.filter((g) => g.kind !== 'opened' && g.kind !== 'prs' && g.branches.length);
+    return [...opened, ...prs, ...this.worktrees, ...rest];
   }
 }
 
@@ -181,7 +183,7 @@ class RepoNode {
 class BranchGroupNode {
   branches: WorktreeNode[] = [];
   parent?: RepoNode;
-  constructor(readonly kind: 'local' | 'remote' | 'opened', readonly commonDir: string, readonly mainPath: string) {}
+  constructor(readonly kind: 'local' | 'remote' | 'opened' | 'prs', readonly commonDir: string, readonly mainPath: string) {}
 }
 
 class WorktreeNode {
@@ -427,6 +429,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   private branchNodes = new Map<string, WorktreeNode>(); // by `${commonDir}\0${refname}`
   private prCache = new Map<string, { at: number; value: Promise<Map<string, PrInfo>> }>();
   private opened = new Map<string, BranchGroupNode>(); // commonDir -> ad-hoc commits/PRs opened from a blame hover
+  private prGroups = new Map<string, BranchGroupNode>(); // commonDir -> the open-pull-request rows
   private expanded?: WorktreeNode; // only one worktree is expanded (and diffed/watched) at a time
   private repoWatchers: vscode.Disposable[] = [];
   private repoWatchKey = '';
@@ -474,18 +477,8 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
 
     type Pick = vscode.QuickPickItem & { mode: Mode };
     const items: Pick[] = [
-      ...(node.ref ? [] : [{ label: '$(edit) Uncommitted changes', description: 'vs HEAD', mode: 'uncommitted' as Mode }]),
-      ...commits.map((c, i): Pick => {
-        // "Last k commits" = working tree vs the commit just before the k-th newest one.
-        const k = i + 1;
-        const baseSha = commits[k]?.sha ?? mb!;
-        return {
-          label: `$(git-commit) Last ${k} commit${k === 1 ? '' : 's'}`,
-          description: `${c.short} ${c.subject}`,
-          detail: `back to ${c.when}${commits[k] ? '' : ' — the whole branch'}`,
-          mode: `commit:${baseSha}`,
-        };
-      }),
+      // Base comparisons first — the whole branch, then the other bases: these are what a review
+      // almost always wants, ahead of the long per-commit list.
       ...(commits.length
         ? [
             {
@@ -498,6 +491,18 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       // Other bases: the base branch itself, plus anything further down the stack.
       ...(stack.length && base ? [{ label: `$(git-branch) Everything since ${base}`, description: 'ignores the stack', mode: `base:refs/heads/${base}` as Mode }] : []),
       ...stack.slice(1).map((c): Pick => ({ label: `$(layers) On top of ${c.short}`, description: `${c.ahead} commits ahead of it`, mode: `base:${c.ref}` as Mode })),
+      ...(node.ref ? [] : [{ label: '$(edit) Uncommitted changes', description: 'vs HEAD', mode: 'uncommitted' as Mode }]),
+      ...commits.map((c, i): Pick => {
+        // "Last k commits" = working tree vs the commit just before the k-th newest one.
+        const k = i + 1;
+        const baseSha = commits[k]?.sha ?? mb!;
+        return {
+          label: `$(git-commit) Last ${k} commit${k === 1 ? '' : 's'}`,
+          description: `${c.short} ${c.subject}`,
+          detail: `back to ${c.when}${commits[k] ? '' : ' — the whole branch'}`,
+          mode: `commit:${baseSha}`,
+        };
+      }),
     ];
     for (const it of items) if (it.mode === current) it.label += '  $(check)';
     const picked = await vscode.window.showQuickPick(items, {
@@ -551,6 +556,19 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   }
 
   private pump() {
+    // The expanded row is the only one anybody is waiting on, so it never queues behind background
+    // refreshes — it starts even when every background slot is busy.
+    const i = this.expanded ? this.queue.indexOf(this.expanded) : -1;
+    if (i >= 0) {
+      const node = this.queue.splice(i, 1)[0];
+      if (this.isLive(node)) {
+        this.running++;
+        this.reload(node).finally(() => {
+          this.running--;
+          this.pump();
+        });
+      }
+    }
     while (this.running < 4 && this.queue.length) {
       const node = this.queue.shift()!;
       if (!this.isLive(node)) continue; // removed meanwhile
@@ -592,7 +610,8 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       next.set(key, node);
     }
     const opened = this.opened.get(common);
-    return { groups: opened ? [opened, local, remote] : [local, remote], moved };
+    const prs = this.prGroups.get(common);
+    return { groups: [...(opened ? [opened] : []), ...(prs ? [prs] : []), local, remote], moved };
   }
 
   /**
@@ -667,6 +686,66 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
         log.info(`linked ${linked} rows to pull requests`);
         this.emitter.fire(undefined);
       }
+      await this.syncPrRows(repo, main, prs);
+    }
+  }
+
+  /**
+   * A row per open pull request, so a review starts from the PR rather than from hunting its branch
+   * among the remotes. These are not the same as the branch rows: a branch is diffed against the
+   * default base, while a PR is diffed against the merge-base with the branch it actually targets —
+   * which for a stacked PR is its predecessor, not main.
+   */
+  private async syncPrRows(repo: RepoNode, main: string, prs: Map<string, PrInfo>) {
+    const open = [...prs.values()].filter((p) => p.state === 'OPEN').sort((a, b) => b.number - a.number);
+    let group = this.prGroups.get(repo.commonDir);
+    if (!group) {
+      group = new BranchGroupNode('prs', repo.commonDir, main);
+      this.prGroups.set(repo.commonDir, group);
+    }
+    if (!repo.groups.includes(group)) {
+      (repo as { groups: BranchGroupNode[] }).groups.push(group);
+      group.parent = this.repos.length > 1 ? repo : undefined;
+    }
+    let added = 0;
+    let unfetched = 0;
+    for (const pr of open) {
+      const refname = `pr/${pr.number}`;
+      const key = `${repo.commonDir}\0${refname}`;
+      if (this.branchNodes.has(key)) continue;
+      // Only the PR's own remote-tracking branch; a fork's head is not in this clone and fetching
+      // every one of them on a refresh would be a surprise.
+      const head = await git(main, ['rev-parse', '--verify', `refs/remotes/origin/${pr.headRef}`]).then((o) => o.trim()).catch(() => '');
+      if (!head) {
+        unfetched++;
+        continue;
+      }
+      const when = (await git(main, ['show', '-s', '--format=%cr', head]).catch(() => '')).trim();
+      // Every rebuild starts a sync without waiting for the last, so another one may have added this
+      // row while the git calls above were in flight.
+      if (group.branches.some((n) => n.ref!.ref === refname)) continue;
+      const node = new WorktreeNode(repo.worktrees[0].wt, false, repo.worktrees[0].repo, worktreeStore(repo.commonDir, `ref:${refname}`));
+      node.ref = { ref: refname, short: `#${pr.number} ${pr.title}`, sha: head, when, author: `into ${pr.baseRef}`, remote: true };
+      node.prNumber = pr.number;
+      node.webUrl = pr.url;
+      node.parent = group;
+      group.branches.push(node);
+      this.branchNodes.set(key, node);
+      // `base:` rather than a resolved merge-base sha: the row then re-derives the merge-base on
+      // every load, so the diff stays right as the target branch moves underneath the PR.
+      await this.state.update(`mode:${node.key}`, `base:refs/remotes/origin/${pr.baseRef}` as Mode);
+      added++;
+    }
+    // Drop rows for PRs that have since been merged or closed.
+    for (const node of [...group.branches]) {
+      if (open.some((p) => `pr/${p.number}` === node.ref!.ref)) continue;
+      group.branches.splice(group.branches.indexOf(node), 1);
+      this.branchNodes.delete(`${repo.commonDir}\0${node.ref!.ref}`);
+    }
+    group.branches.sort((a, b) => Number(b.ref!.ref.slice(3)) - Number(a.ref!.ref.slice(3)));
+    if (added || unfetched) {
+      log.info(`open pull requests: ${group.branches.length} rows${unfetched ? `, ${unfetched} skipped (head not in this clone)` : ''}`);
+      this.emitter.fire(undefined);
     }
   }
 
@@ -778,10 +857,14 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
         return node;
       });
       const listed = await this.listBranchGroups(common, wts[0], wts, repoCtx, branchNodes);
-      for (const n of listed.groups.find((g) => g.kind === 'opened')?.branches ?? []) {
-        n.wt = wts[0];
-        n.repo = repoCtx;
-        branchNodes.set(`${common}\0${n.ref!.ref}`, n);
+      for (const g of listed.groups) {
+        if (g.kind !== 'opened' && g.kind !== 'prs') continue;
+        // These rows are not rediscovered from refs, so a rebuild has to carry them over itself.
+        for (const n of g.branches) {
+          n.wt = wts[0];
+          n.repo = repoCtx;
+          branchNodes.set(`${common}\0${n.ref!.ref}`, n);
+        }
       }
       for (const n of listed.moved) {
         if (n.diff) n.stale = true;
@@ -809,7 +892,12 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     this.repos = repos;
     this.nodes = nodes;
     this.branchNodes = branchNodes;
-    if (this.expanded && !this.isLive(this.expanded)) this.expanded = undefined;
+    if (this.expanded && !this.isLive(this.expanded)) {
+      // A row that did not survive a rebuild takes the accordion with it: the next expand sees no
+      // previous row and so collapses nothing, leaving two rows open.
+      log.info(`expanded row ${nodeName(this.expanded)} did not survive the rebuild; accordion reset`);
+      this.expanded = undefined;
+    }
     this.rewatchRepos();
     this.rewatchExpanded();
 
@@ -817,10 +905,17 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       this.layout = layout;
       this.emitter.fire(undefined);
     }
-    // New worktrees (including every one on window open) and ones whose HEAD moved are re-diffed
-    // in the background; the tree shows the cached result meanwhile.
-    // Branch rows only re-diff when expanded (there can be hundreds).
-    for (const node of [...created, ...moved]) if (!node.ref || node === this.expanded) this.enqueue(node);
+    // Only the rows you are actually looking at re-diff: the expanded one, and the worktree this
+    // window sits in. Every other row shows its cached count from diff.json and re-diffs when
+    // expanded, the same way branch rows always have.
+    //
+    // Diffing every worktree up front does not scale: a checkout with 18 worktrees and 12
+    // submodules spent 42s of git work in an 8s window on window open, and an extension host busy
+    // with that cannot paint the tree — rows stayed empty long after their diffs were ready.
+    for (const node of [...created, ...moved]) {
+      if (node === this.expanded || (!node.ref && node.isCurrent)) this.enqueue(node);
+      else node.stale = true;
+    }
     void this.linkPrs();
   }
 
@@ -829,6 +924,9 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     const previous = this.expanded;
     this.expanded = node;
     node.stale = true;
+    // Background refreshes for rows that are now collapsed only delay this one; they are marked
+    // stale already and re-diff whenever they are expanded again.
+    this.queue = this.queue.filter((n) => n === node);
     this.rewatchExpanded();
     if (previous) {
       // Accordion: VS Code has no per-item collapse API, so collapse all and re-reveal the new one.
@@ -853,7 +951,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   private async doLoadChanges(node: WorktreeNode): Promise<boolean> {
     const t = performance.now();
     const changed = await this.doLoadChangesInner(node);
-    log.debug(`load ${nodeName(node)} ${changed ? 'changed' : 'unchanged'} in ${(performance.now() - t).toFixed(0)}ms`);
+    log.info(`load ${nodeName(node)} ${changed ? 'changed' : 'unchanged'} in ${(performance.now() - t).toFixed(0)}ms`);
     return changed;
   }
 
@@ -966,7 +1064,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   async getChildren(node?: Node): Promise<Node[]> {
     const t = performance.now();
     const out = await this.getChildrenInner(node);
-    log.debug(`getChildren ${nodeName(node)} -> ${out.length} in ${(performance.now() - t).toFixed(1)}ms`);
+    log.info(`getChildren ${nodeName(node)} -> ${out.length} in ${(performance.now() - t).toFixed(1)}ms`);
     return out;
   }
 
@@ -1006,13 +1104,25 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
 
     if (node instanceof BranchGroupNode) {
       const item = new vscode.TreeItem(
-        node.kind === 'opened' ? 'Opened commits & PRs' : node.kind === 'local' ? 'Local branches (no worktree)' : 'Remote branches',
+        node.kind === 'opened'
+          ? 'Opened commits & PRs'
+          : node.kind === 'prs'
+            ? 'Open pull requests'
+            : node.kind === 'local'
+              ? 'Local branches (no worktree)'
+              : 'Remote branches',
         node.kind === 'opened' ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed,
       );
       item.description = `${node.branches.length}`;
-      item.iconPath = new vscode.ThemeIcon(node.kind === 'opened' ? 'history' : node.kind === 'local' ? 'git-branch' : 'cloud');
-      item.contextValue = node.kind === 'remote' ? 'remotes' : node.kind === 'local' ? 'locals' : 'opened';
-      item.tooltip = 'Diffed straight from git objects against the merge-base with the base branch; nothing is checked out.';
+      item.iconPath = new vscode.ThemeIcon(
+        node.kind === 'opened' ? 'history' : node.kind === 'prs' ? 'git-pull-request' : node.kind === 'local' ? 'git-branch' : 'cloud',
+      );
+      item.contextValue =
+        node.kind === 'remote' ? 'remotes' : node.kind === 'local' ? 'locals' : node.kind === 'prs' ? 'prs' : 'opened';
+      item.tooltip =
+        node.kind === 'prs'
+          ? 'Every open pull request, diffed against the merge-base with the branch it actually targets.'
+          : 'Diffed straight from git objects against the merge-base with the base branch; nothing is checked out.';
       item.id = `g:${node.commonDir}:${node.kind}`;
       return item;
     }
@@ -1866,7 +1976,7 @@ export function activate(context: vscode.ExtensionContext) {
     provider,
     view,
     view.onDidExpandElement((e) => {
-      log.debug(`expand ${nodeName(e.element)}`);
+      log.info(`expand ${nodeName(e.element)}`);
       return provider.onExpand(e.element, view);
     }),
     view.onDidCollapseElement((e) => provider.onCollapse(e.element)),
