@@ -1519,7 +1519,56 @@ async function openAll(node: WorktreeNode | FolderNode | SubmoduleNode) {
       return [vscode.Uri.file(f.absPath), left, right];
     }),
   );
-  await vscode.commands.executeCommand('vscode.changes', `${branch}${scope} (${owner.baseLabel})`, resources);
+  const title = `${branch}${scope} (${owner.baseLabel})`;
+  const all: AllChanges = {
+    title,
+    source: vscode.Uri.from({ scheme: 'crosscut-all', path: `/${owner.key}/${scope.trim()}` }),
+    files: files.map((f, i) => ({ rel: f.change.path, status: f.change.status, left: resources[i][1], right: resources[i][2] })),
+  };
+  allChanges.set(title, all);
+  // The private command rather than `vscode.changes`: it is the only one that can reveal a file
+  // later (goToFileInAll), and reopening the same source URI reuses the editor instead of stacking tabs.
+  try {
+    await openMultiDiff(all);
+  } catch (e) {
+    log.warn(`_workbench.openMultiDiffEditor failed, falling back to vscode.changes: ${e}`);
+    await vscode.commands.executeCommand('vscode.changes', title, resources);
+  }
+}
+
+interface AllChanges {
+  title: string;
+  source: vscode.Uri;
+  files: { rel: string; status: string; left: vscode.Uri; right: vscode.Uri }[];
+}
+const allChanges = new Map<string, AllChanges>(); // by editor title
+
+function openMultiDiff(all: AllChanges, reveal?: vscode.Uri) {
+  return vscode.commands.executeCommand('_workbench.openMultiDiffEditor', {
+    title: all.title,
+    multiDiffSourceUri: all.source,
+    resources: all.files.map((f) => ({ originalUri: f.left, modifiedUri: f.right })),
+    reveal: reveal && { modifiedUri: reveal },
+  });
+}
+
+/** Quick pick over the files in the active "Open All Changes" editor, scrolling to the chosen one. */
+async function goToFileInAll() {
+  const label = vscode.window.tabGroups.activeTabGroup.activeTab?.label;
+  const all = (label && allChanges.get(label)) ?? [...allChanges.values()].pop();
+  if (!all) return;
+  type Item = vscode.QuickPickItem & { file: AllChanges['files'][number] };
+  const picked = await vscode.window.showQuickPick<Item>(
+    all.files.map((f) => ({
+      label: path.posix.basename(f.rel),
+      description: `${f.status}  ${path.posix.dirname(f.rel) === '.' ? '' : path.posix.dirname(f.rel)}`,
+      iconPath: vscode.ThemeIcon.File,
+      resourceUri: vscode.Uri.file(f.rel),
+      file: f,
+    })),
+    { title: `Go to file in ${all.title}`, placeHolder: 'Type to filter by name or folder', matchOnDescription: true },
+  );
+  if (picked) await openMultiDiff(all, picked.file.right);
 }
 
 async function compareWithCurrent(node: FileNode) {
@@ -2061,6 +2110,7 @@ export function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand('crosscut.openDiff', openDiff),
     vscode.commands.registerCommand('crosscut.openAll', openAll),
+    vscode.commands.registerCommand('crosscut.goToFileInAll', goToFileInAll),
     vscode.commands.registerCommand('crosscut.openFile', async (n: FileNode) =>
       vscode.window.showTextDocument((await diffSides(n)).right),
     ),

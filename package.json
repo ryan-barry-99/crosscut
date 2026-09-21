@@ -48,6 +48,12 @@
         "icon": "$(diff-multiple)"
       },
       {
+        "command": "crosscut.goToFileInAll",
+        "title": "Go to File in All Changes\u2026",
+        "category": "Crosscut",
+        "icon": "$(go-to-file)"
+      },
+      {
         "command": "crosscut.openWorktree",
         "title": "Open Worktree in New Window",
         "icon": "$(empty-window)"
@@ -176,6 +182,14 @@
         "command": "crosscut.discardPendingReview",
         "title": "Discard Pending Review on GitHub\u2026",
         "icon": "$(trash)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "crosscut.goToFileInAll",
+        "key": "ctrl+alt+o",
+        "mac": "cmd+alt+o",
+        "when": "activeEditor == 'multiDiffEditor'"
       }
     ],
     "menus": {
@@ -330,6 +344,10 @@
       ],
       "commandPalette": [
         {
+          "command": "crosscut.goToFileInAll",
+          "when": "activeEditor == 'multiDiffEditor'"
+        },
+        {
           "command": "crosscut.toggleMode",
           "when": "false"
         },
@@ -439,6 +457,11 @@
         }
       ],
       "editor/title": [
+        {
+          "command": "crosscut.goToFileInAll",
+          "when": "activeEditor == 'multiDiffEditor'",
+          "group": "navigation@1"
+        },
         {
           "command": "crosscut.toggleBlame",
           "when": "crosscut.canBlame",
