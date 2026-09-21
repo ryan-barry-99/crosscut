@@ -48,6 +48,11 @@
         "icon": "$(diff-multiple)"
       },
       {
+        "command": "crosscut.installCli",
+        "title": "Install 'crosscut' Command-Line Tool",
+        "category": "Crosscut"
+      },
+      {
         "command": "crosscut.openInAll",
         "title": "Show in All Changes",
         "icon": "$(diff-multiple)"

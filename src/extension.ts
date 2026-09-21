@@ -1,7 +1,9 @@
 import * as crypto from 'crypto';
 import { promises as fs } from 'fs';
+import * as net from 'net';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { PresentRequest, PresentResponse, WindowEntry, windowsDir } from './ipc';
 import { BlameLine, blameFile } from './blame';
 import { DraftComment, PrDetails, PrInfo, ReviewComment, ReviewSummary, commitAuthorLogin, RefTitle, refTitles, prComments, prDetails, prForCommit, prReviews, prsByBranch, repoUrl, setGhErrorHandler, stagePendingReview, pendingReviewId, pendingReviewComments, deletePendingReview } from './gh';
 import {
@@ -987,7 +989,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
    * "Open All Changes" on a collapsed row: make it the expanded one first (so the accordion and the
    * file watcher follow), wait for its diff, then open.
    */
-  async openAll(node: WorktreeNode | FolderNode | SubmoduleNode, view: vscode.TreeView<Node>) {
+  async openAll(node: WorktreeNode | FolderNode | SubmoduleNode, view: vscode.TreeView<Node>, reveal?: string) {
     if (node instanceof WorktreeNode) {
       if (node !== this.expanded) {
         await view.reveal(node, { expand: true, select: true, focus: false });
@@ -995,7 +997,46 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       }
       if (node.stale || !node.diff) await this.reload(node);
     }
-    await openAll(node);
+    const files = collectFiles(node instanceof WorktreeNode ? node.tree : node.children);
+    await openAll(node, reveal ? files.find((f) => f.absPath === reveal) : undefined);
+  }
+
+  /** The repos in the tree, for the CLI to find the window showing its repo. */
+  commonDirs(): string[] {
+    return this.repos.map((r) => r.commonDir);
+  }
+
+  /** `crosscut present`: open a row's changes, optionally under a new comparison, from outside. */
+  async present(req: PresentRequest, view: vscode.TreeView<Node>): Promise<PresentResponse> {
+    let node: WorktreeNode | undefined;
+    if (req.commit) {
+      const main = this.repos.find((r) => r.commonDir === req.commonDir)?.worktrees[0]?.wt.path;
+      if (!main) return { ok: false, message: `${req.commonDir} is not in the Crosscut tree` };
+      await this.openAdHoc(main, req.commit, view);
+      node = this.branchNodes.get(`${req.commonDir}\0adhoc/${req.commit.id}`);
+    } else if (req.ref) {
+      node = this.branchNodes.get(`${req.commonDir}\0${req.ref}`);
+      // A branch checked out in a worktree has no branch row; its worktree row is the one.
+      const short = req.ref.replace(/^refs\/heads\//, '');
+      node ??= [...this.nodes.values()].find((n) => n.wt.branch === short && this.repoOf(n) === req.commonDir);
+    } else {
+      node = this.nodes.get(req.worktree);
+    }
+    if (!node) return { ok: false, message: `no row for ${req.ref ?? req.worktree} in the Crosscut tree` };
+    if (req.mode === 'uncommitted' && node.ref) return { ok: false, message: 'a branch has no uncommitted changes' };
+    if (req.mode && req.mode !== this.modeFor(node)) {
+      await this.state.update(`mode:${node.key}`, req.mode);
+      node.stale = true;
+    }
+    const reveal = req.file && path.join(node.ref ? node.wt.path : req.worktree, req.file);
+    await this.openAll(node, view, reveal);
+    if (node.error) return { ok: false, message: node.error };
+    const n = node.diff ? countFiles(node.diff) : 0;
+    return { ok: true, message: `opened ${n} file${n === 1 ? '' : 's'}, ${node.baseLabel}` };
+  }
+
+  private repoOf(node: WorktreeNode): string | undefined {
+    return this.repos.find((r) => r.worktrees.includes(node))?.commonDir;
   }
 
   onCollapse(node: Node) {
@@ -1576,6 +1617,84 @@ function openInAll(node: FileNode) {
   return openAll(node.owner, node);
 }
 
+/**
+ * Listen for the `crosscut` CLI on a per-window unix socket, advertised by an entry file the CLI
+ * reads to find the window showing its repo. The entry is rewritten as repos and focus change.
+ */
+function serveCli(provider: WorktreeDiffsProvider, view: vscode.TreeView<Node>): vscode.Disposable {
+  const dir = windowsDir();
+  const id = `${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  const socket = path.join(dir, `${id}.sock`);
+  const entryFile = path.join(dir, `${id}.json`);
+  let focusedAt = Date.now();
+  let written = '';
+  const writeEntry = () => {
+    const entry: WindowEntry = {
+      pid: process.pid,
+      socket,
+      folders: (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
+      commonDirs: provider.commonDirs(),
+      focusedAt,
+    };
+    const text = JSON.stringify(entry);
+    if (text === written) return; // tree redraws are frequent; the entry rarely changes
+    written = text;
+    void fs.writeFile(entryFile, text).catch((e) => log.warn(`cli entry: ${e}`));
+  };
+  const server = net.createServer((conn) => {
+    let buf = '';
+    conn.setEncoding('utf8');
+    conn.on('data', async (d) => {
+      buf += d;
+      const nl = buf.indexOf('\n');
+      if (nl < 0) return;
+      let reply: PresentResponse;
+      try {
+        const req = JSON.parse(buf.slice(0, nl)) as PresentRequest;
+        log.info(`cli: present ${req.ref ?? req.worktree}${req.mode ? ` as ${req.mode}` : ''}${req.file ? ` at ${req.file}` : ''}`);
+        reply = await provider.present(req, view);
+      } catch (e) {
+        reply = { ok: false, message: e instanceof Error ? e.message : String(e) };
+      }
+      conn.end(JSON.stringify(reply));
+    });
+    conn.on('error', () => undefined);
+  });
+  void fs
+    .mkdir(dir, { recursive: true })
+    .then(() => fs.rm(socket, { force: true }))
+    .then(() => server.listen(socket, writeEntry))
+    .catch((e) => log.warn(`cli socket: ${e}`));
+  const onFocus = vscode.window.onDidChangeWindowState((s) => {
+    if (!s.focused) return;
+    focusedAt = Date.now();
+    writeEntry();
+  });
+  const onRepos = provider.onDidChangeTreeData(() => writeEntry());
+  return new vscode.Disposable(() => {
+    onFocus.dispose();
+    onRepos.dispose();
+    server.close();
+    void fs.rm(entryFile, { force: true });
+    void fs.rm(socket, { force: true });
+  });
+}
+
+/**
+ * Put `crosscut` on the PATH as a wrapper that runs this extension's CLI with the extension host's
+ * own node, so it works where no node is installed. Rewritten on every activation once it exists,
+ * so it follows extension updates.
+ */
+async function installCli(context: vscode.ExtensionContext, explicit: boolean) {
+  const bin = path.join(require('os').homedir(), '.local', 'bin', 'crosscut');
+  if (!explicit && !(await fs.stat(bin).then(() => true, () => false))) return;
+  const script = `#!/bin/sh\n# Written by the Crosscut VS Code extension.\nexec "${process.execPath}" "${path.join(context.extensionPath, 'out', 'cli.js')}" "$@"\n`;
+  if ((await fs.readFile(bin, 'utf8').catch(() => '')) === script) return;
+  await fs.mkdir(path.dirname(bin), { recursive: true });
+  await fs.writeFile(bin, script, { mode: 0o755 });
+  if (explicit) void vscode.window.showInformationMessage(`Installed ${bin}. Try: crosscut present`);
+}
+
 interface AllChanges {
   title: string;
   owner: string; // the row and folder it was opened for
@@ -2129,11 +2248,13 @@ export function activate(context: vscode.ExtensionContext) {
   syncSubmitOption();
   storageRoot = path.join(context.globalStorageUri.fsPath, 'repos');
   const provider = new WorktreeDiffsProvider(context.workspaceState);
+  void installCli(context, false).catch((e) => log.warn(`crosscut cli: ${e}`));
   const view = vscode.window.createTreeView('crosscut', { treeDataProvider: provider, showCollapseAll: true });
 
   context.subscriptions.push(
     provider,
     view,
+    serveCli(provider, view),
     view.onDidExpandElement((e) => {
       log.info(`expand ${nodeName(e.element)}`);
       return provider.onExpand(e.element, view);
@@ -2159,6 +2280,9 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('crosscut.openAll', (node: WorktreeNode | FolderNode | SubmoduleNode) => provider.openAll(node, view)),
     vscode.commands.registerCommand('crosscut.goToFileInAll', goToFileInAll),
     vscode.commands.registerCommand('crosscut.openInAll', openInAll),
+    vscode.commands.registerCommand('crosscut.installCli', () =>
+      installCli(context, true).catch((e) => vscode.window.showErrorMessage(`Could not install crosscut: ${e}`)),
+    ),
     vscode.window.tabGroups.onDidChangeTabs(updateAllChangesContext),
     vscode.window.tabGroups.onDidChangeTabGroups(updateAllChangesContext),
     vscode.commands.registerCommand('crosscut.openFile', async (n: FileNode) =>

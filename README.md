@@ -68,6 +68,17 @@ A summary with no comments is a valid review. GitHub does not let you approve yo
 - **Clean up merged branches**: local branches whose upstream is gone, classified by whether git or the PR can prove they were merged. Merged ones are pre-selected, every deletion is confirmed, and each deleted tip is logged with the `git branch <name> <sha>` needed to restore it.
 - **Fetched PR refs** (`refs/prs/*`) are dropped at the start of the next session by default, since they pin objects. See `crosscut.fetchedPrRefs`.
 
+## Command line
+
+**Crosscut: Install 'crosscut' Command-Line Tool** writes `~/.local/bin/crosscut`, which runs with the extension host's own node and is kept current across extension updates.
+
+- `crosscut present [--vs <rev> | --rebase <rev> | --uncommitted | --last <n> | --branch] [--ref <branch>] [--file <path>]` opens the current worktree's changes (or a branch's) in the VS Code window showing the repo, as one multi-file diff. A comparison flag also becomes the row's comparison in the tree. Meant for agents: run it from a terminal to show someone a change against the right base.
+- `crosscut present --commit <rev>` or `crosscut present <from>..<to>` (`...` for the merge-base) opens a commit or range as its own row under **Opened commits & PRs**; `--title` names it. An agent can show what a session did by noting `HEAD` at the start and presenting `<start>..HEAD` at the end.
+- `crosscut base [<tip>]` prints the branch `<tip>` is stacked on, or the base branch, and the merge-base.
+- `crosscut rebase-preview <onto> [<tip>] [--json]` lists the files a rebase would conflict on and the commits responsible, without touching anything. Exits 1 when it would conflict.
+
+Each window listens on a unix socket under `~/.cache/crosscut/windows/`; `present` picks the window whose workspace contains the current directory, else the one focused last.
+
 ## Settings
 
 | Setting | Default | Meaning |
