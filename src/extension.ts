@@ -31,6 +31,9 @@ import {
   repoCommonDir,
   git,
   showAtRef,
+  previewRebase,
+  RebaseConflict,
+  RebasePreview,
 } from './git';
 
 const SCHEME = 'crosscut-ref';
@@ -49,7 +52,8 @@ function nodeName(n?: Node): string {
 // 'branch'      = vs the merge-base with the base branch, or with the branch this one is stacked on
 // 'base:<ref>'   = vs the merge-base with that ref, chosen explicitly
 // 'commit:<sha>' = vs that commit (e.g. the last N commits, plus uncommitted edits in a worktree)
-type Mode = 'branch' | 'uncommitted' | `commit:${string}` | `base:${string}`;
+// 'rebase:<ref>' = what rebasing the committed tip onto that ref would produce, conflicts included
+type Mode = 'branch' | 'uncommitted' | `commit:${string}` | `base:${string}` | `rebase:${string}`;
 
 // ---------------------------------------------------------------------------
 // Read-only documents holding a file's content at a git ref. The URI path is
@@ -205,6 +209,7 @@ class WorktreeNode {
   details?: PrDetails; // the pull request's own description
   message?: string; // full commit message of this row's tip
   outdated: ReviewComment[] = []; // comments whose line no longer exists in the head version
+  rebaseConflicts?: Map<string, RebaseConflict>; // path -> conflict, in a rebase preview
   ref?: BranchRef; // set for a branch with no worktree: `wt` is then the main checkout, used only to run git
   constructor(
     public wt: Worktree,
@@ -477,6 +482,11 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
 
     type Pick = vscode.QuickPickItem & { mode: Mode };
     const items: Pick[] = [
+      {
+        label: `$(git-merge) Rebase preview onto…${current.startsWith('rebase:') ? `  $(check) ${shortName(current.slice(7))}` : ''}`,
+        description: node.ref ? 'conflicts a rebase would hit, without rebasing' : 'committed changes only; conflicts a rebase would hit',
+        mode: 'rebase:' as Mode,
+      },
       // Base comparisons first — the whole branch, then the other bases: these are what a review
       // almost always wants, ahead of the long per-commit list.
       ...(commits.length
@@ -513,7 +523,43 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       matchOnDescription: true,
       matchOnDetail: true,
     });
-    if (picked) await this.setMode(node, picked.mode);
+    if (!picked) return;
+    if (picked.mode !== 'rebase:') return this.setMode(node, picked.mode);
+    const onto = await this.pickRebaseTarget(node);
+    if (onto) await this.setMode(node, `rebase:${onto}`);
+  }
+
+  /** Open pull requests first — the usual thing to restack onto — then every other branch. */
+  private async pickRebaseTarget(node: WorktreeNode): Promise<string | undefined> {
+    const cwd = node.wt.path;
+    const self = node.ref?.ref ?? (node.wt.branch ? `refs/heads/${node.wt.branch}` : undefined);
+    const [branches, prs] = await Promise.all([
+      listBranches(cwd).catch(() => [] as BranchRef[]),
+      this.prsFor(cwd).catch(() => new Map<string, PrInfo>()),
+    ]);
+    const others = branches.filter((b) => b.ref !== self && b.short !== node.wt.branch);
+    type Target = vscode.QuickPickItem & { ref?: string };
+    const selfBranch = node.ref ? (node.prNumber ? undefined : branchNameOf(node.ref)) : node.wt.branch;
+    const open = [...prs.values()]
+      .filter((p) => p.state === 'OPEN' && p.number !== node.prNumber && p.headRef !== selfBranch)
+      .sort((a, b) => b.number - a.number);
+    const prItems: Target[] = open.flatMap((p) => {
+      const b = others.find((x) => x.short === p.headRef) ?? others.find((x) => x.short === `origin/${p.headRef}`);
+      return b ? [{ label: `$(git-pull-request) #${p.number} ${p.title}`, description: b.short, detail: `into ${p.baseRef}`, ref: b.ref }] : [];
+    });
+    const taken = new Set(prItems.map((i) => i.ref));
+    const branchItems: Target[] = others
+      .filter((b) => !taken.has(b.ref))
+      .map((b) => ({ label: `$(${b.remote ? 'cloud' : 'git-branch'}) ${b.short}`, description: `${b.when} · ${b.author}`, ref: b.ref }));
+    const picked = await vscode.window.showQuickPick<Target>(
+      [
+        ...(prItems.length ? [{ label: 'Open pull requests', kind: vscode.QuickPickItemKind.Separator }, ...prItems] : []),
+        { label: 'Branches', kind: vscode.QuickPickItemKind.Separator },
+        ...branchItems,
+      ],
+      { title: 'Rebase preview onto…', placeHolder: 'Committed changes only; nothing is checked out or rewritten', matchOnDescription: true },
+    );
+    return picked?.ref;
   }
 
   /** Re-list worktrees (cheap); redraws only what changed. */
@@ -774,6 +820,8 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   /** Inline review comments for a PR row (or a branch that has one), rendered as comment threads. */
   private async loadComments(node: WorktreeNode) {
     if (!vscode.workspace.getConfiguration('crosscut').get<boolean>('showPrComments', true)) return;
+    // The right side is a synthetic commit, so review comments on the real head have nowhere to land.
+    if (this.modeFor(node).startsWith('rebase:')) return;
     const main = node.wt.path;
     // A worktree row has a branch too, so it can be linked to its pull request just like a branch row.
     const branch = node.ref ? (node.ref.ref.startsWith('adhoc/') ? undefined : branchNameOf(node.ref)) : node.wt.branch;
@@ -965,7 +1013,17 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     let error: string | undefined;
     try {
       let baseRef = 'HEAD';
-      if (mode === 'uncommitted') {
+      node.rebaseConflicts = undefined;
+      let preview: RebasePreview | undefined;
+      if (mode.startsWith('rebase:')) {
+        const onto = mode.slice('rebase:'.length);
+        preview = await previewRebase(cwd, onto, tip);
+        node.rebaseConflicts = new Map(preview.conflicts.map((c) => [c.path, c]));
+        const n = preview.conflicts.length;
+        baseLabel = `rebase onto ${shortName(onto)}: ${
+          n ? `${n} conflicted file${n === 1 ? '' : 's'} in ${preview.conflictedCommits} of ${preview.replayed} commits` : `clean, ${preview.replayed} commits`
+        }`;
+      } else if (mode === 'uncommitted') {
         baseLabel = 'uncommitted';
       } else if (mode.startsWith('commit:')) {
         baseRef = mode.slice('commit:'.length);
@@ -999,7 +1057,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       if (node.ref && !(await hasRef(cwd, tip))) {
         throw new Error(`commit ${tip.slice(0, 10)} is not in this clone — fetch it first`);
       }
-      diff = node.ref ? await loadRefDiff(cwd, baseRef, tip) : await loadDiff(cwd, baseRef);
+      diff = preview ? preview.diff : node.ref ? await loadRefDiff(cwd, baseRef, tip) : await loadDiff(cwd, baseRef);
       node.message = (await git(cwd, ['show', '-s', '--format=%B', tip]).catch(() => '')).trim();
     } catch (e) {
       diff = { root: cwd, baseRef: 'HEAD', changes: [] };
@@ -1265,8 +1323,13 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       n ? `  💬 ${n}` : ''
     }`;
     item.tooltip = `${STATUS_LABEL[change.status] ?? change.status}: ${node.absPath}`;
+    const conflict = node.diff === owner.diff ? owner.rebaseConflicts?.get(change.path) : undefined;
+    if (conflict) {
+      item.description = `conflict · ${conflict.commits.length} commit${conflict.commits.length === 1 ? '' : 's'}`;
+      item.tooltip = `Conflicts when rebased, in:\n${conflict.commits.map((c) => `  ${c}`).join('\n')}\n\nShown as the last conflicting commit leaves it, markers included.`;
+    }
     item.iconPath = new vscode.ThemeIcon(
-      change.status === 'D' ? 'diff-removed' : change.status === 'A' || change.status === '?' ? 'diff-added' : 'diff-modified',
+      conflict ? 'warning' : change.status === 'D' ? 'diff-removed' : change.status === 'A' || change.status === '?' ? 'diff-added' : 'diff-modified',
       new vscode.ThemeColor(STATUS_COLOR[change.status] ?? 'foreground'),
     );
     item.contextValue = (owner.isCurrent && !owner.ref ? 'file' : 'file.foreign') + (n ? '.commented' : '');

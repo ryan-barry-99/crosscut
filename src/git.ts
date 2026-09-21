@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'child_process';
 import { promises as fs } from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 // Never take optional locks (index refresh): we only read, and a lock would both contend with other
@@ -460,4 +461,117 @@ export async function showAtRef(cwd: string, ref: string, relPath: string): Prom
   } catch {
     return ''; // file does not exist at ref
   }
+}
+
+/** Like `git`, with stdin, extra environment, and the exit code instead of a rejection on status 1. */
+function gitRaw(cwd: string, args: string[], opts: { input?: string; env?: NodeJS.ProcessEnv } = {}): Promise<{ code: number; stdout: string }> {
+  return new Promise((resolve, reject) => {
+    const child = execFile('git', args, { cwd, env: { ...GIT_ENV, ...opts.env }, maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const code = err ? ((err as { code?: unknown }).code as number) : 0;
+      if (err && code !== 1) reject(new Error(`git ${args.join(' ')}: ${stderr || err.message}`));
+      else resolve({ code, stdout });
+    });
+    child.stdin?.end(opts.input ?? '');
+  });
+}
+
+// Synthetic commits get a fixed identity and date, so replaying the same inputs gives the same ids
+// and a reload that changed nothing is recognized as unchanged.
+const SYNTH_ENV = {
+  GIT_AUTHOR_NAME: 'crosscut', GIT_AUTHOR_EMAIL: 'crosscut@localhost', GIT_AUTHOR_DATE: '@0 +0000',
+  GIT_COMMITTER_NAME: 'crosscut', GIT_COMMITTER_EMAIL: 'crosscut@localhost', GIT_COMMITTER_DATE: '@0 +0000',
+};
+
+/** `tree` with each path replaced by its entry in `from` (a tree-ish), or removed where `from` lacks it. */
+async function patchTree(cwd: string, tree: string, from: string, paths: string[]): Promise<string> {
+  const entries = new Map<string, string>();
+  for (const line of (await git(cwd, ['ls-tree', '-z', from, '--', ...paths])).split('\0')) {
+    const tab = line.indexOf('\t');
+    if (tab < 0) continue;
+    const [mode, , sha] = line.slice(0, tab).split(' ');
+    entries.set(line.slice(tab + 1), `${mode} ${sha}`);
+  }
+  const index = path.join(os.tmpdir(), `crosscut-index-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  const env = { GIT_INDEX_FILE: index };
+  try {
+    await gitRaw(cwd, ['read-tree', tree], { env });
+    const info = paths.map((p) => `${entries.get(p) ?? `0 ${'0'.repeat(40)}`}\t${p}`).join('\n') + '\n';
+    await gitRaw(cwd, ['update-index', '--index-info'], { env, input: info });
+    return (await gitRaw(cwd, ['write-tree'], { env })).stdout.trim();
+  } finally {
+    await fs.rm(index, { force: true });
+  }
+}
+
+export interface RebaseConflict {
+  path: string;
+  commits: string[]; // "<short sha> <subject>" of every replayed commit that conflicted on this path
+}
+
+export interface RebasePreview {
+  diff: RepoDiff; // onto's tip vs the replayed result, conflicted files holding their conflict markers
+  conflicts: RebaseConflict[];
+  replayed: number;
+  conflictedCommits: number;
+}
+
+/**
+ * What `git rebase <onto>` would do to `tip`, without touching a checkout, the index, or any ref:
+ * each commit is replayed with `merge-tree`, as a rebase would, onto the result of the one before.
+ *
+ * A conflicted path is carried forward as the commit's own version of it — roughly what resolving
+ * the conflict produces — so later commits are replayed against something sensible instead of a
+ * file full of markers. The result then shows each conflicted file as its last conflicting merge
+ * left it, markers included. Commits already upstream (by patch id) are skipped, as rebase does.
+ */
+export async function previewRebase(cwd: string, onto: string, tip: string): Promise<RebasePreview> {
+  const verify = async (r: string) => (await git(cwd, ['rev-parse', '--verify', `${r}^{commit}`])).trim();
+  const [ontoSha, tipSha] = await Promise.all([verify(onto), verify(tip)]);
+  const log = await git(cwd, ['log', '--reverse', '--no-merges', '--right-only', '--cherry-pick', '--format=%H%x00%P%x00%h %s', `${ontoSha}...${tipSha}`]);
+  const commits = log.split('\n').filter(Boolean).map((l) => {
+    const [sha, parents, desc] = l.split('\0');
+    return { sha, parent: parents.split(' ')[0], desc };
+  });
+  const conflicts = new Map<string, { commits: string[]; markers: string }>();
+  let conflictedCommits = 0;
+  let cur = ontoSha;
+  for (const c of commits) {
+    const merged = await gitRaw(cwd, ['merge-tree', '--write-tree', '--name-only', '--no-messages', `--merge-base=${c.parent}`, cur, c.sha]);
+    const [tree, ...rest] = merged.stdout.split('\n');
+    let result = tree.trim();
+    if (merged.code === 1) {
+      const paths = [...new Set(rest.filter(Boolean))];
+      conflictedCommits++;
+      for (const p of paths) {
+        const hit = conflicts.get(p) ?? { commits: [], markers: '' };
+        hit.commits.push(c.desc);
+        hit.markers = result;
+        conflicts.set(p, hit);
+      }
+      result = await patchTree(cwd, result, c.sha, paths);
+    }
+    cur = (await gitRaw(cwd, ['commit-tree', result, '-p', cur, '-m', c.desc], { env: SYNTH_ENV })).stdout.trim();
+  }
+  let head = cur;
+  if (conflicts.size) {
+    // Each conflicted file as its last conflicting merge left it, grouped by that merge's tree.
+    let tree = (await git(cwd, ['rev-parse', `${cur}^{tree}`])).trim();
+    const byMerge = new Map<string, string[]>();
+    for (const [p, { markers }] of conflicts) byMerge.set(markers, [...(byMerge.get(markers) ?? []), p]);
+    for (const [markers, paths] of byMerge) tree = await patchTree(cwd, tree, markers, paths);
+    head = (await gitRaw(cwd, ['commit-tree', tree, '-p', cur, '-m', 'rebase preview'], { env: SYNTH_ENV })).stdout.trim();
+  }
+  const diff = await loadRefDiff(cwd, ontoSha, head);
+  for (const p of conflicts.keys()) {
+    const change = diff.changes.find((ch) => ch.path === p);
+    if (change) change.status = 'U';
+    else diff.changes.push({ status: 'U', path: p });
+  }
+  diff.changes.sort((a, b) => a.path.localeCompare(b.path));
+  return {
+    diff,
+    conflicts: [...conflicts].map(([p, { commits }]) => ({ path: p, commits })),
+    replayed: commits.length,
+    conflictedCommits,
+  };
 }
