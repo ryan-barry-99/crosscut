@@ -440,6 +440,9 @@ export async function loadRefDiff(root: string, baseRef: string, headRef: string
   return { root, baseRef, headRef, changes };
 }
 
+/** A new folder with more untracked files than this stays one row: it is build output, not source. */
+const UNTRACKED_DIR_LIMIT = 200;
+
 /** Working tree (tracked + untracked) compared against `ref`. */
 export async function changesAgainst(cwd: string, ref: string): Promise<Change[]> {
   const [diff, untracked] = await Promise.all([
@@ -447,11 +450,23 @@ export async function changesAgainst(cwd: string, ref: string): Promise<Change[]
     git(cwd, ['ls-files', '--others', '--exclude-standard', '--directory', '-z']),
   ]);
   const changes = parseNameStatus(diff);
+  const dirs: string[] = [];
   for (const p of untracked.split('\0')) {
     if (!p) continue;
-    if (p.endsWith('/')) changes.push({ status: '?', path: p.slice(0, -1), untrackedDir: true });
+    if (p.endsWith('/')) dirs.push(p);
     else changes.push({ status: '?', path: p });
   }
+  // --directory keeps an unignored build tree from listing thousands of files, but it also folds a
+  // new source folder into one opaque row. Open up each folder that is small enough to be source.
+  await Promise.all(
+    dirs.map(async (dir) => {
+      const inside = (await git(cwd, ['ls-files', '--others', '--exclude-standard', '-z', '--', dir]).catch(() => ''))
+        .split('\0')
+        .filter(Boolean);
+      if (inside.length && inside.length <= UNTRACKED_DIR_LIMIT) for (const p of inside) changes.push({ status: '?', path: p });
+      else changes.push({ status: '?', path: dir.slice(0, -1), untrackedDir: true });
+    }),
+  );
   return changes.sort((a, b) => a.path.localeCompare(b.path));
 }
 
