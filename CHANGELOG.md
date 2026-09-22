@@ -2,8 +2,14 @@
 
 ## Unreleased
 
+- `crosscut present` works when no window shows the repo: the most recently focused window adds
+  it to its Crosscut tree, remembered for that workspace, with **Remove from Crosscut** on its row.
+
 ### Fixed
 
+- `crosscut rebase-preview` could crash at random, and a git command exiting early could take down
+  the extension host.
+- One corrupt window entry made every `crosscut present` fail.
 - `crosscut present` with a comparison flag (`--vs`, `--branch`, `--last`, ...) no longer changes
   the comparison of the row you are looking at. A different comparison now opens as its own row
   under *Opened commits & PRs*, and presenting the same one again reuses that row.

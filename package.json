@@ -129,6 +129,11 @@
         "icon": "$(close)"
       },
       {
+        "command": "crosscut.removeRepo",
+        "title": "Remove from Crosscut",
+        "icon": "$(close)"
+      },
+      {
         "command": "crosscut.openOnGitHub",
         "title": "Open on GitHub",
         "icon": "$(globe)"
@@ -302,6 +307,11 @@
           "group": "inline@9"
         },
         {
+          "command": "crosscut.removeRepo",
+          "when": "view == crosscut && viewItem == repo.added",
+          "group": "inline@9"
+        },
+        {
           "command": "crosscut.openOnGitHub",
           "when": "view == crosscut && viewItem =~ /\\.(web|pr)(\\.drafts)?$/",
           "group": "2_web@1"
@@ -426,6 +436,10 @@
         },
         {
           "command": "crosscut.closeAdHoc",
+          "when": "false"
+        },
+        {
+          "command": "crosscut.removeRepo",
           "when": "false"
         },
         {

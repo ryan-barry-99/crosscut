@@ -25,14 +25,14 @@ test('directories live under XDG_CACHE_HOME', () => {
   assert.equal(linksDir(), path.join(process.env.XDG_CACHE_HOME!, 'crosscut', 'links'));
 });
 
-test('windowsFor ranks the window holding cwd first, then the one focused last', async () => {
+test('windowsFor ranks windows showing the repo first, holding cwd first, then the rest by focus', async () => {
   entry('old', { commonDirs: ['/r/.git'], folders: ['/elsewhere'], focusedAt: 1 });
   entry('recent', { commonDirs: ['/r/.git'], folders: ['/elsewhere2'], focusedAt: 5 });
   entry('holder', { commonDirs: ['/r/.git'], folders: ['/r'], focusedAt: 0 });
   entry('other-repo', { commonDirs: ['/s/.git'], folders: ['/r'], focusedAt: 9 });
   writeFileSync(path.join(windowsDir(), 'broken.json'), '{not json');
   const ranked = await windowsFor('/r/.git', '/r/src');
-  assert.deepEqual(ranked.map((w) => path.basename(w.socket)), ['holder.sock', 'recent.sock', 'old.sock']);
+  assert.deepEqual(ranked.map((w) => path.basename(w.socket)), ['holder.sock', 'recent.sock', 'old.sock', 'other-repo.sock']);
   assert.equal((await windowsFor('/r/.git', '/rx')).at(0)?.focusedAt, 5, 'a sibling path is not inside /r');
 });
 

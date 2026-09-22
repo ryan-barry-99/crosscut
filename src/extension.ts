@@ -6,7 +6,7 @@ import { prDetails, prForCommit, prsByBranch, repoUrl, setGhErrorHandler, stageP
 import { hasRef, fetchPullRef, listRefs, changedLineRanges, deleteRef, detectBaseBranch, mergeBase, git } from './git';
 import { log, lastGhError, setLog, setLastGhError } from './log';
 import { SCHEME, RefContentProvider, setStorageRoot } from './snapshots';
-import { nodeName, BranchGroupNode, WorktreeNode, FolderNode, SubmoduleNode, FileNode, comments, storeOwners, drafts, ownerOfDocument, initComments } from './model';
+import { nodeName, RepoNode, BranchGroupNode, WorktreeNode, FolderNode, SubmoduleNode, FileNode, comments, storeOwners, drafts, ownerOfDocument, initComments } from './model';
 import { WorktreeDiffsProvider } from './provider';
 import { DESC_SCHEME, descriptions, descChanged, showDescription, diffSides, openDiff, presentedLines, highlightPresented, openInAll, allChanges, updateAllChangesContext, goToFileInAll, compareWithCurrent } from './diffs';
 import { serveCli, installCli } from './cliServer';
@@ -95,15 +95,12 @@ export function activate(context: vscode.ExtensionContext) {
   const followLink = async (parse: () => PresentRequest) => {
     try {
       const req = parse();
+      // Prefer a window already showing the repo; with none, this one adds it to its tree.
       const other = provider.commonDirs().includes(req.commonDir)
         ? undefined
-        : (await windowsFor(req.commonDir, req.worktree)).find((w) => w.pid !== process.pid);
+        : (await windowsFor(req.commonDir, req.worktree)).find((w) => w.pid !== process.pid && w.commonDirs.includes(req.commonDir));
       log.info(`link: present ${req.ref ?? req.worktree}${other ? ` via window ${other.pid}` : ''}`);
       const t = performance.now();
-      if (!other && !provider.commonDirs().includes(req.commonDir)) {
-        void vscode.window.showWarningMessage(`Crosscut link: open ${path.basename(req.worktree)} in a VS Code window first — no window is showing it.`);
-        return;
-      }
       const reply = other ? await send(other.socket, req) : await provider.present(req, view);
       log.info(`link: ${reply.ok ? 'opened' : 'failed'} in ${(performance.now() - t).toFixed(0)}ms`);
       if (!reply.ok) void vscode.window.showWarningMessage(`Crosscut link: ${reply.message}`);
@@ -556,6 +553,7 @@ export function activate(context: vscode.ExtensionContext) {
       );
     }),
     vscode.commands.registerCommand('crosscut.closeAdHoc', (n: WorktreeNode) => provider.closeAdHoc(n)),
+    vscode.commands.registerCommand('crosscut.removeRepo', (n: RepoNode) => provider.removeRepo(n.commonDir)),
     vscode.commands.registerCommand('crosscut.openOnGitHub', async (n: WorktreeNode) => {
       const main = n.wt.path;
       let url = n.webUrl;

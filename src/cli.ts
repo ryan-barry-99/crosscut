@@ -237,7 +237,7 @@ async function presentRequest(argv: string[], extra: string[] = []): Promise<{ r
 async function present(argv: string[]) {
   const { req } = await presentRequest(argv);
   const [win] = await windowsFor(req.commonDir, process.cwd());
-  if (!win) fail(`no VS Code window with the Crosscut view is showing ${req.worktree}`);
+  if (!win) fail('no VS Code window with the Crosscut extension is open');
   const reply = await send(win.socket, req);
   if (!reply.ok) fail(reply.message);
   process.stdout.write(`${reply.message}\n`);

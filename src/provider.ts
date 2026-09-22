@@ -264,7 +264,7 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
       group = new BranchGroupNode('opened', repo.commonDir, main);
       this.opened.set(repo.commonDir, group);
       (repo as { groups: BranchGroupNode[] }).groups.unshift(group);
-      group.parent = this.repos.length > 1 ? repo : undefined;
+      group.parent = this.repoRows ? repo : undefined;
     }
     const refname = `adhoc/${entry.id}`;
     let node = group.branches.find((n) => n.ref!.ref === refname);
@@ -343,7 +343,7 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
     }
     if (!repo.groups.includes(group)) {
       (repo as { groups: BranchGroupNode[] }).groups.push(group);
-      group.parent = this.repos.length > 1 ? repo : undefined;
+      group.parent = this.repoRows ? repo : undefined;
     }
     let added = 0;
     let unfetched = 0;
@@ -462,6 +462,40 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
     }
   }
 
+  /** Repos outside the workspace that were added to the tree, by a present for one: their paths. */
+  private addedRepos(): string[] {
+    return this.state.get<string[]>('addedRepos', []);
+  }
+
+  /** Whether a repo is in the tree only because it was added, not because the workspace holds it. */
+  isAdded(commonDir: string): boolean {
+    return this.added.has(commonDir);
+  }
+  private added = new Set<string>(); // commonDirs of the added repos currently shown
+
+  /** Each repo gets a row of its own when there are several, or when one was added from outside. */
+  private get repoRows(): boolean {
+    return this.repos.length > 1 || this.added.size > 0;
+  }
+
+  /** Show a repo the workspace does not hold, remembered for this workspace. False if `dir` is not in one. */
+  async addRepo(dir: string): Promise<boolean> {
+    const common = await repoCommonDir(dir);
+    if (!common) return false;
+    if (!this.repos.some((r) => r.commonDir === common)) {
+      await this.state.update('addedRepos', [...this.addedRepos(), dir]);
+      await this.refresh();
+    }
+    return this.repos.some((r) => r.commonDir === common);
+  }
+
+  async removeRepo(commonDir: string) {
+    const keep = [];
+    for (const dir of this.addedRepos()) if ((await repoCommonDir(dir)) !== commonDir) keep.push(dir);
+    await this.state.update('addedRepos', keep);
+    await this.refresh();
+  }
+
   async refresh() {
     const folders = vscode.workspace.workspaceFolders ?? [];
     const byCommon = new Map<string, string>(); // commonDir -> a folder inside that repo
@@ -471,6 +505,15 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
         if (common && !byCommon.has(common)) byCommon.set(common, f.uri.fsPath);
       }),
     );
+    // Added repos follow the workspace's own, and one the workspace has since opened is its own again.
+    // A path that no longer resolves to a repo is dropped.
+    this.added = new Set();
+    for (const dir of this.addedRepos()) {
+      const common = await repoCommonDir(dir);
+      if (!common || byCommon.has(common)) continue;
+      byCommon.set(common, dir);
+      this.added.add(common);
+    }
 
     const repos: RepoNode[] = [];
     const nodes = new Map<string, WorktreeNode>();
@@ -521,8 +564,9 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
     }
     await Promise.all(created.map((n) => this.restore(n)));
     for (const repo of repos) {
-      for (const n of repo.worktrees) n.parent = repos.length > 1 ? repo : undefined;
-      for (const g of repo.groups) g.parent = repos.length > 1 ? repo : undefined;
+      const rows = repos.length > 1 || this.added.size > 0;
+      for (const n of repo.worktrees) n.parent = rows ? repo : undefined;
+      for (const g of repo.groups) g.parent = rows ? repo : undefined;
     }
 
     const layout = repos
@@ -614,6 +658,10 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
 
   /** `crosscut present`: open a row's changes, optionally under a new comparison, from outside. */
   async present(req: PresentRequest, view: vscode.TreeView<Node>): Promise<PresentResponse> {
+    // A repo this window does not show (the agent works elsewhere) joins the tree rather than failing.
+    if (!this.repos.some((r) => r.commonDir === req.commonDir) && !(await this.addRepo(req.worktree))) {
+      return { ok: false, message: `${req.worktree} is not a git repository` };
+    }
     let node: WorktreeNode | undefined;
     if (req.commit) {
       const main = this.repos.find((r) => r.commonDir === req.commonDir)?.worktrees[0]?.wt.path;
@@ -868,7 +916,7 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
   }
 
   private async getChildrenInner(node?: Node): Promise<Node[]> {
-    if (!node) return this.repos.length === 1 ? this.repos[0].children : this.repos;
+    if (!node) return this.repoRows ? this.repos : (this.repos[0]?.children ?? []);
     if (node instanceof RepoNode) return node.children;
     if (node instanceof BranchGroupNode) return node.branches;
     if (node instanceof WorktreeNode) {
@@ -898,6 +946,10 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
       const item = new vscode.TreeItem(path.basename(path.dirname(node.commonDir)), vscode.TreeItemCollapsibleState.Expanded);
       item.iconPath = new vscode.ThemeIcon('repo');
       item.tooltip = node.commonDir;
+      if (this.added.has(node.commonDir)) {
+        item.description = 'added';
+        item.contextValue = 'repo.added';
+      }
       return item;
     }
 

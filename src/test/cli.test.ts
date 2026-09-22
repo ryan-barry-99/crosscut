@@ -2,7 +2,7 @@ import { cleanup, repo, Repo, tempDir } from './repo';
 import { after, before, describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { execFile } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import * as net from 'net';
 import * as path from 'path';
 import { PresentRequest } from '../ipc';
@@ -51,7 +51,7 @@ async function fakeWindow(r: Repo, reply = { ok: true, message: 'opened 1 file, 
   writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(entry));
   return {
     received,
-    close: () => new Promise<void>((res) => server.close(() => res())),
+    close: () => new Promise<void>((res) => server.close(() => (rmSync(path.join(dir, `${id}.json`), { force: true }), res()))),
     entryFile: path.join(dir, `${id}.json`),
   };
 }
@@ -223,6 +223,32 @@ describe('crosscut present', () => {
     }
   });
 
+  test('sends to a window showing another repo when none shows this one', async () => {
+    const r = featureRepo();
+    const elsewhere = await fakeWindow(repo());
+    try {
+      const run = await crosscut(r.root, 'present');
+      assert.equal(run.code, 0, run.stderr);
+      assert.equal(elsewhere.received[0].commonDir, path.join(r.root, '.git'));
+    } finally {
+      await elsewhere.close();
+    }
+  });
+
+  test('prefers the window showing the repo over one focused later', async () => {
+    const r = featureRepo();
+    const showing = await fakeWindow(r);
+    const later = await fakeWindow(repo());
+    try {
+      await crosscut(r.root, 'present');
+      assert.equal(showing.received.length, 1);
+      assert.equal(later.received.length, 0);
+    } finally {
+      await showing.close();
+      await later.close();
+    }
+  });
+
   test('passes on the window refusing', async () => {
     const r = featureRepo();
     const win = await fakeWindow(r, { ok: false, message: 'not changed in vs main: x' });
@@ -235,7 +261,7 @@ describe('crosscut present', () => {
     }
   });
 
-  test('fails when no window shows the repo, and clears entries of dead windows', async () => {
+  test('fails when no window is open, and clears entries of dead windows', async () => {
     const r = featureRepo();
     const dir = path.join(cache, 'crosscut', 'windows');
     mkdirSync(dir, { recursive: true });
@@ -243,7 +269,7 @@ describe('crosscut present', () => {
     writeFileSync(dead, JSON.stringify({ pid: 2 ** 22 + 12345, socket: path.join(dir, 'dead.sock'), folders: [], commonDirs: [path.join(r.root, '.git')], focusedAt: 0 }));
     const run = await crosscut(r.root, 'present');
     assert.equal(run.code, 2);
-    assert.match(run.stderr, /no VS Code window with the Crosscut view is showing/);
+    assert.match(run.stderr, /no VS Code window with the Crosscut extension is open/);
     assert.equal(existsSync(dead), false);
   });
 

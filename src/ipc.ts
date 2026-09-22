@@ -92,10 +92,15 @@ export function send(socket: string, req: PresentRequest): Promise<PresentRespon
   });
 }
 
-/** The windows showing this repo, best first: the one whose workspace holds `cwd`, else the one focused last. */
+/**
+ * Every window, best first for presenting this repo: those showing it (the one whose workspace holds
+ * `cwd` first), then the rest by focus. A window that does not show the repo adds it to its tree.
+ */
 export async function windowsFor(commonDir: string, cwd: string): Promise<WindowEntry[]> {
-  const all = (await windows()).filter((w) => w.commonDirs.includes(commonDir));
+  const shows = (w: WindowEntry) => w.commonDirs.includes(commonDir);
   const inside = (w: WindowEntry) => w.folders.some((f) => cwd === f || cwd.startsWith(f + path.sep));
-  return all.sort((a, b) => Number(inside(b)) - Number(inside(a)) || b.focusedAt - a.focusedAt);
+  return (await windows()).sort(
+    (a, b) => Number(shows(b)) - Number(shows(a)) || Number(inside(b)) - Number(inside(a)) || b.focusedAt - a.focusedAt,
+  );
 }
 

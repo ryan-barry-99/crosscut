@@ -125,3 +125,47 @@ describe('present', () => {
     assert.equal(opened()[0].ref?.short, 'two');
   });
 });
+
+describe('presenting a repo the window does not show', () => {
+  test('adds the repo to the tree, remembered, with a row of its own', async () => {
+    const { state, provider, req } = await setup();
+    const other = repo();
+    other.write('README.md', 'other edit\n');
+    const res = await provider.present(req({ commonDir: path.join(other.root, '.git'), worktree: other.root }), view);
+    assert.equal(res.ok, true, res.message);
+    assert.deepEqual(state.get('addedRepos'), [other.root]);
+    const rows = await provider.getChildren();
+    assert.equal(rows.length, 2);
+    const item = provider.getTreeItem(rows[1]) as vscodeTypes.TreeItem;
+    assert.equal(item.contextValue, 'repo.added');
+    assert.equal(item.description, 'added');
+    assert.equal(provider.getTreeItem(rows[0]).contextValue, undefined, "the workspace's own repo cannot be removed");
+  });
+
+  test('keeps an added repo across a reload, and removes it on request', async () => {
+    const { state, provider, req } = await setup();
+    const other = repo();
+    await provider.present(req({ commonDir: path.join(other.root, '.git'), worktree: other.root }), view);
+    const reloaded = new WorktreeDiffsProvider(state as unknown as vscodeTypes.Memento);
+    await reloaded.refresh();
+    assert.equal((await reloaded.getChildren()).length, 2);
+    await reloaded.removeRepo(path.join(other.root, '.git'));
+    assert.deepEqual(state.get('addedRepos'), []);
+    assert.ok(!reloaded.commonDirs().includes(path.join(other.root, '.git')));
+  });
+
+  test('a repo the workspace opens later stops counting as added', async () => {
+    const { r, provider, req } = await setup();
+    const other = repo();
+    await provider.present(req({ commonDir: path.join(other.root, '.git'), worktree: other.root }), view);
+    workspace.workspaceFolders = [{ uri: FakeUri.file(r.root), name: 'r', index: 0 }, { uri: FakeUri.file(other.root), name: 'o', index: 1 }];
+    await provider.refresh();
+    assert.equal(provider.isAdded(path.join(other.root, '.git')), false);
+  });
+
+  test('refuses a directory that is not a repository', async () => {
+    const { provider, req } = await setup();
+    const dir = tempDir();
+    assert.deepEqual(await provider.present(req({ commonDir: path.join(dir, '.git'), worktree: dir }), view), { ok: false, message: `${dir} is not a git repository` });
+  });
+});
