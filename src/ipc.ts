@@ -59,7 +59,8 @@ export async function windows(): Promise<WindowEntry[]> {
   const names = await fs.readdir(dir).catch(() => [] as string[]);
   const out: WindowEntry[] = [];
   for (const n of names.filter((x) => x.endsWith('.json'))) {
-    const entry = await fs.readFile(path.join(dir, n), 'utf8').then((t) => JSON.parse(t) as WindowEntry, () => undefined);
+    // A half-written or corrupt entry must not take every other window down with it.
+    const entry = await fs.readFile(path.join(dir, n), 'utf8').then((t) => JSON.parse(t) as WindowEntry).catch(() => undefined);
     if (!entry) continue;
     try {
       process.kill(entry.pid, 0);
