@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { shadowFolder } from './shadow';
 import { PresentRequest, PresentResponse, PresentSpec } from './ipc';
 import { PrInfo, prComments, prDetails, prReviews, pendingComments, prsByBranch } from './gh';
 import { Worktree, RepoDiff, allIgnored, countFiles, loadDiff, loadRefDiff, listBranches, stackCandidates, hasRef, BranchRef, detectBaseBranch, listWorktrees, mergeBase, commitsSince, countCommits, repoCommonDir, git, previewRebase, RebasePreview } from './git';
@@ -252,12 +253,12 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
    */
   async openAdHoc(
     main: string,
-    entry: { id: string; label: string; sha: string; base: string; when: string; author: string },
+    entry: { id: string; label: string; sha: string; base: string; when: string; author: string; baseLabel?: string },
     view: vscode.TreeView<Node>,
     webUrl?: string,
     present?: { of: WorktreeNode; mode: Mode },
   ) {
-    const repo = this.repos.find((r) => r.worktrees.some((w) => w.wt.path === main)) ?? this.repos[0];
+    const repo = this.repos.find((r) => r.main.path === main || r.worktrees.some((w) => w.wt.path === main)) ?? this.repos[0];
     if (!repo) return;
     let group = this.opened.get(repo.commonDir);
     if (!group) {
@@ -269,8 +270,8 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
     const refname = `adhoc/${entry.id}`;
     let node = group.branches.find((n) => n.ref!.ref === refname);
     if (!node) {
-      const wt = present?.of.wt ?? repo.worktrees[0].wt;
-      node = new WorktreeNode(wt, false, repo.worktrees[0].repo, worktreeStore(repo.commonDir, `ref:${refname}`));
+      const wt = present?.of.wt ?? repo.main;
+      node = new WorktreeNode(wt, false, repo.ctx, worktreeStore(repo.commonDir, `ref:${refname}`));
       node.ref = { ref: refname, short: entry.label, sha: entry.sha, when: entry.when, author: entry.author, remote: false };
       node.presentOf = present?.of;
       node.parent = group;
@@ -279,7 +280,13 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
       await this.state.update(`mode:${node.key}`, present?.mode ?? (`commit:${entry.base}` as Mode));
     } else if (present) {
       node.stale = true; // presented again: the worktree or branch may have moved since
+    } else if (node.ref!.sha !== entry.sha) {
+      // The same row for new commits (a folder's shadow history moves on with every present).
+      node.ref = { ...node.ref!, sha: entry.sha, short: entry.label, when: entry.when };
+      await this.state.update(`mode:${node.key}`, `commit:${entry.base}` as Mode);
+      node.stale = true;
     }
+    node.fixedBaseLabel = entry.baseLabel ?? node.fixedBaseLabel;
     node.webUrl = webUrl ?? node.webUrl;
     node.prNumber = /^pr-(\d+)$/.exec(entry.id) ? Number(/^pr-(\d+)$/.exec(entry.id)![1]) : node.prNumber;
     this.emitter.fire(undefined);
@@ -306,9 +313,8 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
   private async linkPrs() {
     if (!vscode.workspace.getConfiguration('crosscut').get<boolean>('showPrComments', true)) return;
     for (const repo of this.repos) {
-      const main = repo.worktrees[0]?.wt.path;
-      if (!main) continue;
-      const prs = await this.prsFor(main);
+      if (repo.shadowOf) continue;
+      const prs = await this.prsFor(repo.main.path);
       if (!prs.size) continue;
       let linked = 0;
       for (const node of [...repo.worktrees, ...repo.groups.flatMap((g) => g.branches)]) {
@@ -324,7 +330,7 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
         log.info(`linked ${linked} rows to pull requests`);
         this.emitter.fire(undefined);
       }
-      await this.syncPrRows(repo, main, prs);
+      await this.syncPrRows(repo, repo.main.path, prs);
     }
   }
 
@@ -362,7 +368,7 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
       // Every rebuild starts a sync without waiting for the last, so another one may have added this
       // row while the git calls above were in flight.
       if (group.branches.some((n) => n.ref!.ref === refname)) continue;
-      const node = new WorktreeNode(repo.worktrees[0].wt, false, repo.worktrees[0].repo, worktreeStore(repo.commonDir, `ref:${refname}`));
+      const node = new WorktreeNode(repo.main, false, repo.ctx, worktreeStore(repo.commonDir, `ref:${refname}`));
       node.ref = { ref: refname, short: `#${pr.number} ${pr.title}`, sha: head, when, author: `into ${pr.baseRef}`, remote: true };
       node.prNumber = pr.number;
       node.webUrl = pr.url;
@@ -400,7 +406,7 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
 
   /** Main checkout of every repo in the window. */
   repoPaths(): string[] {
-    return this.repos.map((r) => r.worktrees[0]?.wt.path).filter(Boolean);
+    return this.repos.filter((r) => !r.shadowOf).map((r) => r.main.path);
   }
 
   /** Re-render comment threads for a row after its drafts change. */
@@ -527,6 +533,10 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
       } catch {
         continue;
       }
+      // A folder's shadow history is a bare repo: no worktree rows, just its presented row.
+      const shadowOf = wts.length ? undefined : await shadowFolder(common);
+      if (!wts.length && !shadowOf) continue;
+      const main: Worktree = wts[0] ?? { path: common, head: '', isMain: true, bare: true };
       const repoCtx: { current?: Worktree } = {};
       const repoNodes = wts.map((wt) => {
         const isCurrent = folders.some((f) => isInside(f.uri.fsPath, wt.path));
@@ -545,12 +555,12 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
         nodes.set(wt.path, node);
         return node;
       });
-      const listed = await this.listBranchGroups(common, wts[0], wts, repoCtx, branchNodes);
+      const listed = await this.listBranchGroups(common, main, wts, repoCtx, branchNodes);
       for (const g of listed.groups) {
         if (g.kind !== 'opened' && g.kind !== 'prs') continue;
         // These rows are not rediscovered from refs, so a rebuild has to carry them over itself.
         for (const n of g.branches) {
-          n.wt = wts[0];
+          n.wt = main;
           n.repo = repoCtx;
           branchNodes.set(`${common}\0${n.ref!.ref}`, n);
         }
@@ -559,7 +569,7 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
         if (n.diff) n.stale = true;
         moved.push(n);
       }
-      repos.push(new RepoNode(common, repoNodes, listed.groups));
+      repos.push(new RepoNode(common, repoNodes, listed.groups, main, repoCtx, shadowOf));
       void pruneRemoved(common, [...repoNodes, ...listed.groups.flatMap((g) => g.branches)]);
     }
     await Promise.all(created.map((n) => this.restore(n)));
@@ -659,12 +669,12 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
   /** `crosscut present`: open a row's changes, optionally under a new comparison, from outside. */
   async present(req: PresentRequest, view: vscode.TreeView<Node>): Promise<PresentResponse> {
     // A repo this window does not show (the agent works elsewhere) joins the tree rather than failing.
-    if (!this.repos.some((r) => r.commonDir === req.commonDir) && !(await this.addRepo(req.worktree))) {
+    if (!this.repos.some((r) => r.commonDir === req.commonDir) && !(await this.addRepo(req.shadow ? req.commonDir : req.worktree))) {
       return { ok: false, message: `${req.worktree} is not a git repository` };
     }
     let node: WorktreeNode | undefined;
     if (req.commit) {
-      const main = this.repos.find((r) => r.commonDir === req.commonDir)?.worktrees[0]?.wt.path;
+      const main = this.repos.find((r) => r.commonDir === req.commonDir)?.main.path;
       if (!main) return { ok: false, message: `${req.commonDir} is not in the Crosscut tree` };
       await this.openAdHoc(main, req.commit, view);
       node = this.branchNodes.get(`${req.commonDir}\0adhoc/${req.commit.id}`);
@@ -687,7 +697,7 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
       const source = node;
       const id = `present-${hash(`${source.key}\0${req.mode}`)}`;
       const name = source.ref?.short ?? source.wt.branch ?? path.basename(source.wt.path);
-      const main = this.repos.find((r) => r.commonDir === req.commonDir)?.worktrees[0]?.wt.path ?? source.wt.path;
+      const main = this.repos.find((r) => r.commonDir === req.commonDir)?.main.path ?? source.wt.path;
       const entry = { id, label: name, sha: source.ref?.sha ?? source.wt.head, base: '', when: 'presented', author: '' };
       await this.openAdHoc(main, entry, view, source.webUrl, { of: source, mode: req.mode });
       node = this.branchNodes.get(`${req.commonDir}\0adhoc/${id}`);
@@ -812,7 +822,7 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
       } else if (mode.startsWith('commit:')) {
         baseRef = mode.slice('commit:'.length);
         const n = await countCommits(cwd, baseRef, tip);
-        baseLabel = Number.isNaN(n) ? `vs ${baseRef.slice(0, 7)}` : `last ${n} commit${n === 1 ? '' : 's'}`;
+        baseLabel = node.fixedBaseLabel ?? (Number.isNaN(n) ? `vs ${baseRef.slice(0, 7)}` : `last ${n} commit${n === 1 ? '' : 's'}`);
       } else if (mode.startsWith('base:')) {
         const ref = mode.slice('base:'.length);
         const mb = await mergeBase(cwd, ref, tip);
@@ -943,11 +953,12 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
 
   private getTreeItemInner(node: Node): vscode.TreeItem {
     if (node instanceof RepoNode) {
-      const item = new vscode.TreeItem(path.basename(path.dirname(node.commonDir)), vscode.TreeItemCollapsibleState.Expanded);
-      item.iconPath = new vscode.ThemeIcon('repo');
-      item.tooltip = node.commonDir;
+      const name = node.shadowOf ? path.basename(node.shadowOf) : path.basename(path.dirname(node.commonDir));
+      const item = new vscode.TreeItem(name, vscode.TreeItemCollapsibleState.Expanded);
+      item.iconPath = new vscode.ThemeIcon(node.shadowOf ? 'folder' : 'repo');
+      item.tooltip = node.shadowOf ? `${node.shadowOf}\n\nNot a git repository: Crosscut keeps a history of what was presented.` : node.commonDir;
       if (this.added.has(node.commonDir)) {
-        item.description = 'added';
+        item.description = node.shadowOf ? 'no git repo' : 'added';
         item.contextValue = 'repo.added';
       }
       return item;

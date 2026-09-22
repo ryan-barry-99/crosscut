@@ -31,6 +31,7 @@ initComments(state as unknown as vscodeTypes.Memento, controller as unknown as v
 const row = (store = '/store') => new WorktreeNode({ path: '/r', head: 'h', branch: 'feat', isMain: true } as never, true, {}, store);
 const change = (p: string, extra: Partial<Change> = {}): Change => ({ status: 'M', path: p, ...extra });
 const comment = (over: Partial<ReviewComment>): ReviewComment => ({ id: 1, path: 'a.ts', line: 3, side: 'RIGHT', body: 'hm', author: 'ann', when: '2024-01-01T00:00:00Z', url: '', ...over });
+const MAIN = { path: '/r', head: 'h', isMain: true, bare: false };
 
 describe('buildFileTree', () => {
   test('puts folders first, sorted, and compacts single-child chains', () => {
@@ -62,7 +63,7 @@ describe('nodeName', () => {
     b.ref = { ref: 'refs/heads/x', short: 'x', sha: '', when: '', author: '', remote: false };
     const detached = new WorktreeNode({ path: '/w', head: 'h', isMain: false } as never, false, {}, '');
     assert.deepEqual(
-      [undefined, new RepoNode('/r/.git', [], []), new BranchGroupNode('local', '/r/.git', '/r'), n, b, detached, folder, file, sub].map(nodeName),
+      [undefined, new RepoNode('/r/.git', [], [], MAIN, {}), new BranchGroupNode('local', '/r/.git', '/r'), n, b, detached, folder, file, sub].map(nodeName),
       ['<root>', 'repo /r/.git', 'branches local', 'worktree feat', 'branch x', 'worktree /w', 'folder d', 'file y.ts', 'submodule lib'],
     );
   });
@@ -70,7 +71,7 @@ describe('nodeName', () => {
     const g = (kind: BranchGroupNode['kind'], n: number) => Object.assign(new BranchGroupNode(kind, '', ''), { branches: Array.from({ length: n }, () => row()) });
     const [local, remote, opened, prs] = [g('local', 1), g('remote', 0), g('opened', 1), g('prs', 1)];
     const wt = row();
-    assert.deepEqual(new RepoNode('', [wt], [local, remote, opened, prs]).children, [opened, prs, wt, local]);
+    assert.deepEqual(new RepoNode('', [wt], [local, remote, opened, prs], MAIN, {}).children, [opened, prs, wt, local]);
   });
 });
 

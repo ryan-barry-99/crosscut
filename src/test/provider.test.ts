@@ -169,3 +169,29 @@ describe('presenting a repo the window does not show', () => {
     assert.deepEqual(await provider.present(req({ commonDir: path.join(dir, '.git'), worktree: dir }), view), { ok: false, message: `${dir} is not a git repository` });
   });
 });
+
+describe('presenting a folder with no git repo', () => {
+  test("shows the folder's latest step as its own row, labeled by the folder", async () => {
+    const { provider, req } = await setup();
+    const dir = path.join(tempDir(), 'project');
+    const { mkdirSync, writeFileSync } = await import('fs');
+    mkdirSync(dir);
+    writeFileSync(path.join(dir, 'a.txt'), 'a\n');
+    process.env.XDG_CACHE_HOME = tempDir();
+    const { snapshotFolder } = await import('../shadow');
+    const snap = await snapshotFolder(dir);
+    const commit = { id: 'shadow', label: 'project: all files', sha: snap.head, base: snap.base, when: 'just now', author: '', baseLabel: 'all files' };
+    const shadowReq = req({ commonDir: snap.dir, worktree: dir, shadow: dir, commit });
+    assert.deepEqual(await provider.present(shadowReq, view), { ok: true, message: 'opened 1 file, all files' });
+    const rows = await provider.getChildren();
+    const item = provider.getTreeItem(rows[1]) as vscodeTypes.TreeItem;
+    assert.equal(item.label, 'project');
+    assert.equal(item.description, 'no git repo');
+
+    writeFileSync(path.join(dir, 'b.txt'), 'b\n');
+    const next = await snapshotFolder(dir);
+    const again = req({ commonDir: snap.dir, worktree: dir, shadow: dir, commit: { ...commit, sha: next.head, base: next.base, label: 'project: since the last present', baseLabel: 'since the last present' } });
+    assert.deepEqual(await provider.present(again, view), { ok: true, message: 'opened 1 file, since the last present' });
+    assert.deepEqual(await provider.present({ ...again, only: [{ path: 'b.txt' }] }, view), { ok: true, message: 'opened 1 file of 1, since the last present' });
+  });
+});

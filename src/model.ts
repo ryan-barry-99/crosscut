@@ -25,7 +25,14 @@ export type Mode = 'branch' | 'uncommitted' | `commit:${string}` | `base:${strin
 // Tree model
 
 export class RepoNode {
-  constructor(readonly commonDir: string, readonly worktrees: WorktreeNode[], readonly groups: BranchGroupNode[]) {}
+  constructor(
+    readonly commonDir: string,
+    readonly worktrees: WorktreeNode[],
+    readonly groups: BranchGroupNode[],
+    readonly main: Worktree, // runs git for branch and commit rows; a shadow repo has no worktree rows
+    readonly ctx: { current?: Worktree },
+    readonly shadowOf?: string, // the folder, when this is the shadow history of a folder with no repo
+  ) {}
   get children(): Node[] {
     const opened = this.groups.filter((g) => g.kind === 'opened' && g.branches.length);
     const prs = this.groups.filter((g) => g.kind === 'prs' && g.branches.length);
@@ -61,6 +68,7 @@ export class WorktreeNode {
   message?: string; // full commit message of this row's tip
   outdated: ReviewComment[] = []; // comments whose line no longer exists in the head version
   rebaseConflicts?: Map<string, RebaseConflict>; // path -> conflict, in a rebase preview
+  fixedBaseLabel?: string; // what the row says it is compared against, when a count of commits would mislead
   ref?: BranchRef; // set for a branch with no worktree: `wt` is then the main checkout, used only to run git
   presentOf?: WorktreeNode; // a presented row: diffs this row's worktree or branch under its own comparison
   constructor(

@@ -5,6 +5,7 @@ import { detectBaseBranch, git, mergeBase, previewRebase, repoCommonDir, stackCa
 import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import { EXTENSION_ID, PresentRequest, PresentSpec, linksDir, send, windowsFor } from './ipc';
+import { shadowRoot, snapshotFolder } from './shadow';
 
 const USAGE = `usage: crosscut <command> [options]
 
@@ -13,6 +14,10 @@ const USAGE = `usage: crosscut <command> [options]
       repo, as one multi-file diff. A comparison flag that differs from the row's opens as a row
       of its own under Opened commits & PRs, leaving the row alone. --file scrolls to that file.
       --vs diffs against the merge-base with <rev>; --rebase previews rebasing onto it.
+
+  present   (in a folder with no git repo)
+      Crosscut keeps a history of the folder outside it and shows what changed since the last
+      present: every file the first time. Only --only, --mark, --open, --file and --title apply.
 
   present --pr <n> [--only <spec>... | --open <spec>]
       The pull request's row under Open pull requests, diffed against the branch it targets, with
@@ -190,6 +195,8 @@ async function presentRequest(argv: string[], extra: string[] = []): Promise<{ r
     if (!['vs', 'rebase', 'uncommitted', 'last', 'branch', 'commit', 'title', 'ref', 'pr', 'file', 'open', ...extra].includes(f)) fail(`unknown option --${f}`);
   }
   const cwd = process.cwd();
+  const inRepo = await git(cwd, ['rev-parse', '--show-toplevel']).then((o) => o.trim(), () => undefined);
+  if (!inRepo) return { req: await shadowRequest(cwd, flags, lists, rest), flags };
   const root = await toplevel(cwd);
   const commonDir = await repoCommonDir(cwd);
   if (!commonDir) fail('could not find the repository');
@@ -232,6 +239,28 @@ async function presentRequest(argv: string[], extra: string[] = []): Promise<{ r
   if (open && (only || file || mark)) fail('--open shows one file on its own; it cannot be combined with --only, --mark or --file');
 
   return { req: { cmd: 'present', commonDir, worktree: root, ref, mode, file, commit, only, mark, open }, flags };
+}
+
+/**
+ * A folder with no git repo: snapshot it into its shadow history and present the step since the
+ * last present. Only the narrowing flags apply; there are no branches or commits to pick from.
+ */
+async function shadowRequest(cwd: string, flags: Map<string, string | true>, lists: Map<string, string[]>, rest: string[]): Promise<PresentRequest> {
+  const gitOnly = [...rest, ...['vs', 'rebase', 'uncommitted', 'last', 'branch', 'commit', 'ref', 'pr'].filter((f) => flags.has(f)).map((f) => `--${f}`)];
+  if (gitOnly.length) fail(`${cwd} is not in a git repository, so ${gitOnly.join(', ')} cannot apply; present shows what changed since the last present`);
+  const folder = await shadowRoot(cwd);
+  const snap = await snapshotFolder(folder);
+  const name = path.basename(folder);
+  const baseLabel = snap.first ? 'all files' : snap.changed ? 'since the last present' : 'since the last present (nothing new)';
+  const label = flags.has('title') ? String(flags.get('title')) : `${name}: ${baseLabel}`;
+  const commit = { id: 'shadow', label, sha: snap.head, base: snap.base, when: 'just now', author: '', baseLabel };
+  const only = lists.get('only')?.map((t) => spec(folder, cwd, t));
+  const mark = lists.get('mark')?.map((t) => spec(folder, cwd, t));
+  const file = flags.has('file') ? spec(folder, cwd, String(flags.get('file'))) : undefined;
+  const open = flags.has('open') ? spec(folder, cwd, String(flags.get('open'))) : undefined;
+  if (mark && only) fail('--mark highlights in the full diff and --only narrows it; pass one');
+  if (open && (only || file || mark)) fail('--open shows one file on its own; it cannot be combined with --only, --mark or --file');
+  return { cmd: 'present', commonDir: snap.dir, worktree: folder, shadow: folder, commit, only, mark, file, open };
 }
 
 async function present(argv: string[]) {

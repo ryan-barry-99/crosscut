@@ -1,7 +1,7 @@
 import { cleanup, repo, Repo, tempDir } from './repo';
 import { after, before, describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import * as net from 'net';
 import * as path from 'path';
@@ -78,10 +78,10 @@ describe('crosscut help and errors', () => {
     assert.match(run.stderr, /unknown command frobnicate/);
   });
 
-  test('fails outside a repository', async () => {
+  test('outside a repository, needs a window to present to', async () => {
     const run = await crosscut(tempDir(), 'present');
     assert.equal(run.code, 2);
-    assert.match(run.stderr, /not inside a git repository/);
+    assert.match(run.stderr, /no VS Code window with the Crosscut extension is open/);
   });
 });
 
@@ -342,5 +342,79 @@ describe('crosscut link', () => {
     assert.match(bare.stdout, /^\[open diff\]/);
     const labeled = await crosscut(r.root, 'link', '--chat', '--text', 'Reopen');
     assert.match(labeled.stdout, /^\[Reopen\]/);
+  });
+});
+
+describe('crosscut present in a folder with no git repo', () => {
+  const folder = () => {
+    const dir = path.join(tempDir(), 'project');
+    mkdirSync(path.join(dir, 'src'), { recursive: true });
+    writeFileSync(path.join(dir, 'src', 'main.py'), 'print(1)\n');
+    writeFileSync(path.join(dir, 'README.md'), 'hi\n');
+    return dir;
+  };
+  const shadowGit = (req: PresentRequest, ...args: string[]) =>
+    execFileSync('git', [`--git-dir=${req.commonDir}`, ...args], { encoding: 'utf8' }).trim();
+
+  test('presents every file the first time, then only what changed since', async () => {
+    const dir = folder();
+    const win = await fakeWindow(repo());
+    try {
+      const first = await crosscut(dir, 'present');
+      assert.equal(first.code, 0, first.stderr);
+      writeFileSync(path.join(dir, 'src', 'main.py'), 'print(2)\n');
+      await crosscut(path.join(dir, 'src'), 'present', '--only', 'main.py');
+      await crosscut(dir, 'present');
+      const [a, b, c] = win.received;
+      assert.equal(a.shadow, dir);
+      assert.equal(a.worktree, dir);
+      assert.equal(a.commit!.label, 'project: all files');
+      assert.equal(shadowGit(a, 'diff', '--name-only', a.commit!.base, a.commit!.sha), 'README.md\nsrc/main.py');
+      assert.equal(b.commit!.base, a.commit!.sha);
+      assert.equal(b.commit!.baseLabel, 'since the last present');
+      assert.deepEqual(b.only, [{ path: 'src/main.py' }], 'specs are relative to the folder, found from a subfolder');
+      assert.equal(shadowGit(b, 'diff', '--name-only', b.commit!.base, b.commit!.sha), 'src/main.py');
+      assert.equal(c.commit!.sha, b.commit!.sha, 'nothing new: the last step is shown again');
+      assert.equal(c.commit!.baseLabel, 'since the last present (nothing new)');
+      assert.ok(!existsSync(path.join(dir, '.git')), 'the folder itself is never touched');
+    } finally {
+      await win.close();
+    }
+  });
+
+  test('leaves out node_modules and what the folder ignores', async () => {
+    const dir = folder();
+    mkdirSync(path.join(dir, 'node_modules', 'x'), { recursive: true });
+    writeFileSync(path.join(dir, 'node_modules', 'x', 'i.js'), '');
+    writeFileSync(path.join(dir, '.gitignore'), '*.log\n');
+    writeFileSync(path.join(dir, 'debug.log'), '');
+    const win = await fakeWindow(repo());
+    try {
+      await crosscut(dir, 'present');
+      const [q] = win.received;
+      assert.equal(shadowGit(q, 'ls-tree', '-r', '--name-only', q.commit!.sha), '.gitignore\nREADME.md\nsrc/main.py');
+    } finally {
+      await win.close();
+    }
+  });
+
+  test('refuses the flags that need git', async () => {
+    const run = await crosscut(folder(), 'present', '--branch');
+    assert.equal(run.code, 2);
+    assert.match(run.stderr, /is not in a git repository, so --branch cannot apply/);
+  });
+
+  test('uses the real repo once the folder has one', async () => {
+    const dir = folder();
+    const win = await fakeWindow(repo());
+    try {
+      await crosscut(dir, 'present');
+      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+      await crosscut(dir, 'present');
+      assert.equal(win.received[1].shadow, undefined);
+      assert.equal(win.received[1].commonDir, path.join(dir, '.git'));
+    } finally {
+      await win.close();
+    }
   });
 });

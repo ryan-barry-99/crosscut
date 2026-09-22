@@ -28,7 +28,8 @@ export interface PresentRequest {
   mark?: PresentSpec[]; // highlight these lines without narrowing the diff; scrolled to the first file
   open?: PresentSpec; // open this one file in its own diff editor instead
   // Present a commit or range as its own row in "Opened commits & PRs" instead of an existing row.
-  commit?: { id: string; label: string; sha: string; base: string; when: string; author: string };
+  commit?: { id: string; label: string; sha: string; base: string; when: string; author: string; baseLabel?: string };
+  shadow?: string; // a folder with no git repo: `commonDir` is its shadow history, `commit` the latest step
 }
 
 /** A repo-relative file or folder, optionally with a 1-based inclusive line range on the new side. */

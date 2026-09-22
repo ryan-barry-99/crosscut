@@ -4,6 +4,9 @@
 
 - `crosscut present` works when no window shows the repo: the most recently focused window adds
   it to its Crosscut tree, remembered for that workspace, with **Remove from Crosscut** on its row.
+- `crosscut present` works in a folder with no git repo yet. Crosscut keeps the folder's history in
+  its own cache, never in the folder, and shows every file the first time, then what changed since
+  the last present.
 
 ### Fixed
 
