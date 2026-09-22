@@ -575,7 +575,9 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -w -p .",
-    "package": "npm run compile && vsce package --allow-missing-repository --skip-license"
+    "package": "npm run compile && vsce package --allow-missing-repository --skip-license",
+    "test": "tsc -p . && node --test --test-reporter=spec \"out/test/**/*.test.js\"",
+    "coverage": "tsc -p . && node --test --experimental-test-coverage --test-coverage-exclude=\"out/test/**\" \"out/test/**/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

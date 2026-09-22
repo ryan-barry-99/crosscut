@@ -1,0 +1,127 @@
+import { cleanup, repo, tempDir } from './repo';
+import { config, executed, Memento, FakeUri, workspace } from './fake-vscode';
+import { after, beforeEach, describe, test } from 'node:test';
+import * as assert from 'node:assert/strict';
+import * as path from 'path';
+import type * as vscodeTypes from 'vscode';
+import { PresentRequest } from '../ipc';
+import { setLog } from '../log';
+import { initComments, Node, WorktreeNode } from '../model';
+import { WorktreeDiffsProvider } from '../provider';
+import { setStorageRoot } from '../snapshots';
+
+after(cleanup);
+
+setLog({ info() {}, warn() {}, error() {}, debug() {}, trace() {} } as unknown as vscodeTypes.LogOutputChannel);
+config.showPrComments = false; // no gh calls from these tests
+
+const view = { visible: true, selection: [] as Node[], reveal: async () => undefined } as unknown as vscodeTypes.TreeView<Node>;
+
+/** A repo whose checked-out feature branch is two commits ahead of main, with one uncommitted edit. */
+async function setup() {
+  const r = repo();
+  r.git('checkout', '-q', '-b', 'feature');
+  r.commit('one', { 'src/a.ts': 'a\n' });
+  r.commit('two', { 'src/b.ts': 'b\n' });
+  r.write('README.md', 'edited\n');
+  setStorageRoot(tempDir());
+  const state = new Memento();
+  initComments(state as unknown as vscodeTypes.Memento, { createCommentThread: () => ({ dispose() {} }), dispose() {} } as unknown as vscodeTypes.CommentController);
+  workspace.workspaceFolders = [{ uri: FakeUri.file(r.root), name: 'r', index: 0 }];
+  const provider = new WorktreeDiffsProvider(state as unknown as vscodeTypes.Memento);
+  await provider.refresh();
+  const req = (extra: Partial<PresentRequest> = {}): PresentRequest => ({ cmd: 'present', commonDir: path.join(r.root, '.git'), worktree: r.root, ...extra });
+  const opened = () => (provider as unknown as { opened: Map<string, { branches: WorktreeNode[] }> }).opened.get(path.join(r.root, '.git'))?.branches ?? [];
+  const multiDiffTitles = () => executed.filter((e) => e.command === '_workbench.openMultiDiffEditor').map((e) => (e.args[0] as { title: string }).title);
+  return { r, state, provider, req, opened, multiDiffTitles };
+}
+
+beforeEach(() => {
+  executed.length = 0;
+});
+
+describe('present', () => {
+  test("opens the worktree row's changes under its own comparison", async () => {
+    const { provider, req, multiDiffTitles, opened } = await setup();
+    const res = await provider.present(req(), view);
+    assert.deepEqual(res, { ok: true, message: 'opened 3 files, vs main' });
+    assert.deepEqual(multiDiffTitles(), ['feature (vs main)']);
+    assert.equal(opened().length, 0);
+  });
+
+  test('a different comparison opens its own row and leaves the worktree row alone', async () => {
+    const { r, state, provider, req, multiDiffTitles, opened } = await setup();
+    await provider.present(req(), view);
+    const res = await provider.present(req({ mode: 'uncommitted' }), view);
+    assert.deepEqual(res, { ok: true, message: 'opened 1 file, uncommitted' });
+    assert.equal(state.get(`mode:${r.root}`), undefined, "the worktree row's comparison is untouched");
+    assert.equal(opened().length, 1);
+    assert.equal(opened()[0].presentOf?.wt.path, r.root);
+    assert.deepEqual(multiDiffTitles(), ['feature (vs main)', 'feature (uncommitted)']);
+    assert.deepEqual(await provider.present(req(), view), { ok: true, message: 'opened 3 files, vs main' }, 'the row still shows its own comparison');
+  });
+
+  test('presenting the same comparison again reuses its row, refreshed', async () => {
+    const { r, provider, req, opened } = await setup();
+    await provider.present(req({ mode: 'uncommitted' }), view);
+    r.write('src/new.ts', 'new\n');
+    const res = await provider.present(req({ mode: 'uncommitted' }), view);
+    assert.deepEqual(res, { ok: true, message: 'opened 2 files, uncommitted' });
+    assert.equal(opened().length, 1);
+  });
+
+  test("a comparison matching the row's is shown on the row itself", async () => {
+    const { provider, req, opened } = await setup();
+    await provider.present(req({ mode: 'branch' }), view);
+    assert.equal(opened().length, 0);
+  });
+
+  test("a presented row reads the worktree's working tree and commits", async () => {
+    const { r, provider, req } = await setup();
+    const res = await provider.present(req({ mode: `commit:${r.head('HEAD~1')}` }), view);
+    assert.deepEqual(res, { ok: true, message: 'opened 2 files, last 1 commit' });
+    const merged = await provider.present(req({ mode: 'base:refs/heads/main' }), view);
+    assert.deepEqual(merged, { ok: true, message: 'opened 3 files, vs main' });
+  });
+
+  test('a branch row presented under another comparison gets its own row too', async () => {
+    const { r, state, provider, req, opened } = await setup();
+    r.git('branch', 'other', 'HEAD~1');
+    await provider.refresh();
+    const res = await provider.present(req({ ref: 'refs/heads/other', mode: `commit:${r.head('main')}` }), view);
+    assert.deepEqual(res, { ok: true, message: 'opened 1 file, last 1 commit' });
+    assert.equal(state.get('mode:ref:refs/heads/other'), undefined);
+    assert.equal(opened().length, 1);
+  });
+
+  test('refuses an unknown row, uncommitted on a branch, and specs outside the comparison', async () => {
+    const { r, provider, req } = await setup();
+    assert.deepEqual(await provider.present(req({ worktree: '/nowhere' }), view), { ok: false, message: 'no row for /nowhere in the Crosscut tree' });
+    assert.deepEqual(await provider.present(req({ ref: 'pr/9' }), view), {
+      ok: false,
+      message: '#9 is not under Open pull requests: it is not open, or its branch is not fetched',
+    });
+    r.git('branch', 'other');
+    await provider.refresh();
+    assert.deepEqual(await provider.present(req({ ref: 'refs/heads/other', mode: 'uncommitted' }), view), { ok: false, message: 'a branch has no uncommitted changes' });
+    assert.deepEqual(await provider.present(req({ only: [{ path: 'nope.ts' }] }), view), { ok: false, message: 'not changed in vs main: nope.ts' });
+  });
+
+  test('narrows to files and folders, and opens one file with lines on its own', async () => {
+    const { provider, req, multiDiffTitles } = await setup();
+    assert.deepEqual(await provider.present(req({ only: [{ path: 'src' }] }), view), { ok: true, message: 'opened 2 files of 3, vs main' });
+    assert.deepEqual(multiDiffTitles(), ['feature — 2 of 3 files (vs main)']);
+    assert.deepEqual(await provider.present(req({ only: [{ path: 'src/a.ts', lines: [1, 1] }] }), view), { ok: true, message: 'opened src/a.ts, vs main' });
+    assert.deepEqual(await provider.present(req({ open: { path: 'README.md' } }), view), { ok: true, message: 'opened README.md, vs main' });
+    assert.ok(executed.filter((e) => e.command === 'vscode.diff').length >= 2);
+    assert.deepEqual(await provider.present(req({ mark: [{ path: 'src/b.ts', lines: [1, 1] }] }), view), { ok: true, message: 'opened 3 files, vs main' });
+  });
+
+  test('opens a commit as its own row', async () => {
+    const { r, provider, req, opened } = await setup();
+    const [base, sha] = [r.head('HEAD~1'), r.head()];
+    const commit = { id: `${base.slice(0, 10)}-${sha.slice(0, 10)}`, label: 'two', sha, base, when: 'now', author: 'Test Author' };
+    assert.deepEqual(await provider.present(req({ commit }), view), { ok: true, message: 'opened 1 file, last 1 commit' });
+    assert.equal(opened()[0].ref?.short, 'two');
+  });
+});
