@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'child_process';
+import { ignoreEpipe } from './git';
 
 // gh failures are reported rather than swallowed: "no PR for this commit" and "gh could not run"
 // look identical otherwise.
@@ -213,6 +214,7 @@ export function stagePendingReview(
       }
     });
     // `gh api --input -` reads the payload from stdin and waits for EOF before sending anything.
+    ignoreEpipe(proc);
     proc.stdin.end(payload);
     const guard = setTimeout(() => {
       proc.kill();

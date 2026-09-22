@@ -7,6 +7,15 @@ import * as path from 'path';
 // git processes in the worktree and trip our own watchers.
 const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
 
+/**
+ * A git that exits before reading all its stdin (most commands never read it; a failing one stops
+ * early) makes the write fail with EPIPE, and an unhandled stream error kills the process. The exit
+ * status already reports the failure, so the write error carries nothing and is dropped.
+ */
+export function ignoreEpipe(child: { stdin: NodeJS.WritableStream | null }) {
+  child.stdin?.on('error', () => undefined);
+}
+
 export function git(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile('git', args, { cwd, env: GIT_ENV, maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -375,6 +384,7 @@ export function catFileBatch(cwd: string, specs: string[]): Promise<Map<string, 
       }
       resolve(result);
     });
+    ignoreEpipe(proc);
     proc.stdin.end(batch.join('\n') + '\n');
   });
 }
@@ -388,6 +398,7 @@ export function allIgnored(cwd: string, rels: string[]): Promise<boolean> {
     proc.on('error', () => resolve(false));
     // exit 1 = nothing ignored; 128 = error (e.g. a path inside a submodule) — treat as relevant
     proc.on('close', (code) => resolve(code === 0 && out.split('\0').filter(Boolean).length >= rels.length));
+    ignoreEpipe(proc);
     proc.stdin.end(rels.join('\0') + '\0');
   });
 }
@@ -486,6 +497,7 @@ function gitRaw(cwd: string, args: string[], opts: { input?: string; env?: NodeJ
       if (err && code !== 1) reject(new Error(`git ${args.join(' ')}: ${stderr || err.message}`));
       else resolve({ code, stdout });
     });
+    ignoreEpipe(child);
     child.stdin?.end(opts.input ?? '');
   });
 }
