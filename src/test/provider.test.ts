@@ -195,3 +195,14 @@ describe('presenting a folder with no git repo', () => {
     assert.deepEqual(await provider.present({ ...again, only: [{ path: 'b.txt' }] }, view), { ok: true, message: 'opened 1 file of 1, since the last present' });
   });
 });
+
+describe('changing comparison while a load is running', () => {
+  test('setMode shows the new comparison, not the load already in flight', async () => {
+    const { r, state, provider } = await setup();
+    const [row] = (await provider.getChildren()) as WorktreeNode[];
+    void provider.getChildren(row); // starts a load under the old comparison
+    await provider.setMode(row, 'uncommitted');
+    assert.equal(row.baseLabel, 'uncommitted');
+    assert.equal(state.get(`mode:${r.root}`), 'uncommitted');
+  });
+});

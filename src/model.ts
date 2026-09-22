@@ -53,6 +53,7 @@ export class WorktreeNode {
   tree: Child[] = [];
   stale = true;
   loading?: Promise<boolean>;
+  loadingMode?: string; // the comparison `loading` was started under
   baseRef?: string; // what the working tree is compared against
   baseLabel = '';
   error?: string;

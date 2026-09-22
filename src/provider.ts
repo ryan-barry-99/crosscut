@@ -783,10 +783,20 @@ export class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vsc
     if (node instanceof WorktreeNode && this.expanded.delete(node)) this.rewatchExpanded();
   }
 
-  /** Returns whether anything visible changed. Concurrent calls for one node share a single load. */
+  /**
+   * Returns whether anything visible changed. Concurrent calls for one node share a single load, as
+   * long as it was started under the same comparison; a new comparison loads again once it is done.
+   */
   private loadChanges(node: WorktreeNode): Promise<boolean> {
-    node.loading ??= this.doLoadChanges(node).finally(() => (node.loading = undefined));
-    return node.loading;
+    const mode = this.modeFor(node);
+    if (node.loading && node.loadingMode === mode) return node.loading;
+    const run = (node.loading ?? Promise.resolve(false)).catch(() => false).then(() => this.doLoadChanges(node));
+    node.loading = run;
+    node.loadingMode = mode;
+    void run.finally(() => {
+      if (node.loading === run) node.loading = undefined;
+    }).catch(() => undefined);
+    return run;
   }
 
   private async doLoadChanges(node: WorktreeNode): Promise<boolean> {
