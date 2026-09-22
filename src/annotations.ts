@@ -186,12 +186,17 @@ export async function traceThroughPr(arg: { root: string; sha: string; rel: stri
 export async function showCommit(arg: { root: string; sha: string; rel: string }) {
   const { root, sha, rel } = arg;
   const name = path.posix.basename(rel);
-  // The file may have been renamed or added by this commit; ask git what its parent called it.
-  const before = await git(root, ['log', '-1', '--format=', '--name-status', '-M', '--find-copies', sha, '--', rel])
+  // The file may have been renamed or added by this commit; ask git what its parent called it. No
+  // pathspec: limiting to `rel` hides the old path, so a rename would read as an add.
+  const before = await git(root, ['log', '-1', '--format=', '--name-status', '-z', '-M', '--find-copies', sha])
     .then((o) => {
-      const m = /^R\d*\t([^\t\n]+)\t/.exec(o) ?? /^C\d*\t([^\t\n]+)\t/.exec(o);
-      if (m) return m[1];
-      return /^A\t/.test(o) ? undefined : rel;
+      const tokens = o.split('\0').filter(Boolean);
+      for (let i = 0; i < tokens.length; ) {
+        const status = tokens[i++];
+        const [from, to] = /^[RC]/.test(status) ? [tokens[i++], tokens[i++]] : [tokens[i], tokens[i++]];
+        if (to === rel) return status === 'A' ? undefined : from;
+      }
+      return rel;
     })
     .catch(() => rel);
   log.info(`showCommit ${sha.slice(0, 8)} rel=${rel} before=${before ?? '(added)'} root=${root}`);

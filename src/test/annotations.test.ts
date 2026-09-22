@@ -184,6 +184,14 @@ describe('showCommit', () => {
     assert.deepEqual(JSON.parse(right.query), { cwd: r.root, ref: sha, rel: 'a.ts' });
     assert.equal(title, `a.ts @ ${sha.slice(0, 8)}`);
   });
+  test('a renamed file is diffed against its old path', async () => {
+    const r = repo();
+    r.commit('add', { 'a.ts': 'a long enough body to be detected as a rename\n' });
+    r.git('mv', 'a.ts', 'b.ts');
+    const sha = r.commit('rename');
+    await showCommit({ root: r.root, sha, rel: 'b.ts' });
+    assert.deepEqual(JSON.parse((executed[0].args[0] as vscodeTypes.Uri).query), { cwd: r.root, ref: `${sha}^`, rel: 'a.ts' });
+  });
   test('an added file has an empty left side', async () => {
     const r = repo();
     const sha = r.commit('add', { 'n.ts': 'n\n' });
