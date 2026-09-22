@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `crosscut present` with a comparison flag (`--vs`, `--branch`, `--last`, ...) no longer changes
+  the comparison of the row you are looking at. A different comparison now opens as its own row
+  under *Opened commits & PRs*, and presenting the same one again reuses that row.
+
 ## 0.2.1
 
 - `crosscut present` can point at files and lines: `--mark` highlights lines in the full diff,

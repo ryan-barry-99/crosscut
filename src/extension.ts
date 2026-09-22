@@ -213,6 +213,7 @@ class WorktreeNode {
   outdated: ReviewComment[] = []; // comments whose line no longer exists in the head version
   rebaseConflicts?: Map<string, RebaseConflict>; // path -> conflict, in a rebase preview
   ref?: BranchRef; // set for a branch with no worktree: `wt` is then the main checkout, used only to run git
+  presentOf?: WorktreeNode; // a presented row: diffs this row's worktree or branch under its own comparison
   constructor(
     public wt: Worktree,
     public isCurrent: boolean,
@@ -453,7 +454,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   modeFor(node: WorktreeNode): Mode {
     const def = vscode.workspace.getConfiguration('crosscut').get<Mode>('defaultMode', 'branch');
     const mode = this.state.get<Mode>(`mode:${node.key}`, node.ref ? 'branch' : def);
-    return node.ref && mode === 'uncommitted' ? 'branch' : mode; // a branch has no working tree
+    return (node.presentOf ?? node).ref && mode === 'uncommitted' ? 'branch' : mode; // a branch has no working tree
   }
 
   async toggleMode(node: WorktreeNode) {
@@ -579,7 +580,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     const files = [...this.pendingPaths];
     this.pendingPaths.clear();
     for (const node of this.expanded) {
-      if (node.ref) continue;
+      if ((node.presentOf ?? node).ref) continue;
       const mine = files.filter((f) => f.startsWith(node.wt.path + path.sep));
       if (!mine.length) continue;
       // Build output and other ignored files can't change the diff.
@@ -672,6 +673,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     entry: { id: string; label: string; sha: string; base: string; when: string; author: string },
     view: vscode.TreeView<Node>,
     webUrl?: string,
+    present?: { of: WorktreeNode; mode: Mode },
   ) {
     const repo = this.repos.find((r) => r.worktrees.some((w) => w.wt.path === main)) ?? this.repos[0];
     if (!repo) return;
@@ -685,12 +687,16 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     const refname = `adhoc/${entry.id}`;
     let node = group.branches.find((n) => n.ref!.ref === refname);
     if (!node) {
-      node = new WorktreeNode(repo.worktrees[0].wt, false, repo.worktrees[0].repo, worktreeStore(repo.commonDir, `ref:${refname}`));
+      const wt = present?.of.wt ?? repo.worktrees[0].wt;
+      node = new WorktreeNode(wt, false, repo.worktrees[0].repo, worktreeStore(repo.commonDir, `ref:${refname}`));
       node.ref = { ref: refname, short: entry.label, sha: entry.sha, when: entry.when, author: entry.author, remote: false };
+      node.presentOf = present?.of;
       node.parent = group;
       group.branches.unshift(node);
       this.branchNodes.set(`${repo.commonDir}\0${refname}`, node);
-      await this.state.update(`mode:${node.key}`, `commit:${entry.base}` as Mode);
+      await this.state.update(`mode:${node.key}`, present?.mode ?? (`commit:${entry.base}` as Mode));
+    } else if (present) {
+      node.stale = true; // presented again: the worktree or branch may have moved since
     }
     node.webUrl = webUrl ?? node.webUrl;
     node.prNumber = /^pr-(\d+)$/.exec(entry.id) ? Number(/^pr-(\d+)$/.exec(entry.id)![1]) : node.prNumber;
@@ -1045,9 +1051,17 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     }
     if (!node) return { ok: false, message: `no row for ${req.ref ?? req.worktree} in the Crosscut tree` };
     if (req.mode === 'uncommitted' && node.ref) return { ok: false, message: 'a branch has no uncommitted changes' };
+    // A different comparison than the row shows gets a row of its own, so presenting never changes
+    // what the user has open. Asking again for the same row and comparison reuses that row.
     if (req.mode && req.mode !== this.modeFor(node)) {
-      await this.state.update(`mode:${node.key}`, req.mode);
-      node.stale = true;
+      const source = node;
+      const id = `present-${hash(`${source.key}\0${req.mode}`)}`;
+      const name = source.ref?.short ?? source.wt.branch ?? path.basename(source.wt.path);
+      const main = this.repos.find((r) => r.commonDir === req.commonDir)?.worktrees[0]?.wt.path ?? source.wt.path;
+      const entry = { id, label: name, sha: source.ref?.sha ?? source.wt.head, base: '', when: 'presented', author: '' };
+      await this.openAdHoc(main, entry, view, source.webUrl, { of: source, mode: req.mode });
+      node = this.branchNodes.get(`${req.commonDir}\0adhoc/${id}`);
+      if (!node) return { ok: false, message: `could not open ${name} under a new comparison` };
     }
     await this.ready(node, view);
     if (node.error) return { ok: false, message: node.error };
@@ -1144,8 +1158,9 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
 
   private async doLoadChangesInner(node: WorktreeNode): Promise<boolean> {
     const mode = this.modeFor(node);
-    const cwd = node.wt.path;
-    const tip = node.ref?.sha ?? 'HEAD';
+    const src = node.presentOf ?? node; // whose worktree or branch this row diffs
+    const cwd = src.wt.path;
+    const tip = src.ref?.sha ?? 'HEAD';
     const before = node.diff && JSON.stringify([node.diff, node.baseLabel, node.error]);
     let diff: RepoDiff;
     let baseLabel: string;
@@ -1180,23 +1195,23 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
         // A stacked branch diffed against the base branch would claim its predecessor's changes.
         const stack =
           base && cfg.get<boolean>('detectStackedBase', true)
-            ? await stackCandidates(cwd, tip, base, node.ref?.ref ?? (node.wt.branch && `refs/heads/${node.wt.branch}`) ?? undefined)
+            ? await stackCandidates(cwd, tip, base, src.ref?.ref ?? (src.wt.branch && `refs/heads/${src.wt.branch}`) ?? undefined)
             : [];
         const against = stack[0]?.ref ?? base;
         const mb = against && (await mergeBase(cwd, against, tip));
         if (against && mb) {
           baseRef = mb;
           baseLabel = stack[0] ? `vs ${stack[0].short} (stacked)` : `vs ${base}`;
-        } else if (node.ref) {
+        } else if (src.ref) {
           throw new Error('no base branch found to compare against');
         } else {
           baseLabel = 'uncommitted (no base branch found)';
         }
       }
-      if (node.ref && !(await hasRef(cwd, tip))) {
+      if (src.ref && !(await hasRef(cwd, tip))) {
         throw new Error(`commit ${tip.slice(0, 10)} is not in this clone — fetch it first`);
       }
-      diff = preview ? preview.diff : node.ref ? await loadRefDiff(cwd, baseRef, tip) : await loadDiff(cwd, baseRef);
+      diff = preview ? preview.diff : src.ref ? await loadRefDiff(cwd, baseRef, tip) : await loadDiff(cwd, baseRef);
       node.message = (await git(cwd, ['show', '-s', '--format=%B', tip]).catch(() => '')).trim();
     } catch (e) {
       diff = { root: cwd, baseRef: 'HEAD', changes: [] };
@@ -1238,7 +1253,7 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
 
   /** Working-tree files of each open worktree. A watcher lives exactly as long as its row is open. */
   private rewatchExpanded() {
-    const targets = new Set([...this.expanded].filter((n) => !n.ref).map((n) => n.wt.path));
+    const targets = new Set([...this.expanded].filter((n) => !(n.presentOf ?? n).ref).map((n) => n.wt.path));
     for (const [p, w] of this.expandedWatchers) {
       if (targets.has(p)) continue;
       w.dispose();
