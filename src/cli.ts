@@ -10,8 +10,8 @@ const USAGE = `usage: crosscut <command> [options]
 
   present [--vs <rev> | --rebase <rev> | --uncommitted | --last <n> | --branch] [--file <path>] [--ref <branch>]
       Open this worktree's changes (or a branch's, with --ref) in the VS Code window showing this
-      repo, as one multi-file diff. The comparison flag also becomes the row's comparison in the
-      tree; without one the row keeps whatever it has. --file scrolls to that file.
+      repo, as one multi-file diff. A comparison flag that differs from the row's opens as a row
+      of its own under Opened commits & PRs, leaving the row alone. --file scrolls to that file.
       --vs diffs against the merge-base with <rev>; --rebase previews rebasing onto it.
 
   present --pr <n> [--only <spec>... | --open <spec>]
