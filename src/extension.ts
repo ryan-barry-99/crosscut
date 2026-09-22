@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { PresentRequest, send, windowsFor } from './ipc';
+import { PresentRequest } from './ipc';
 import { prDetails, prForCommit, prsByBranch, repoUrl, setGhErrorHandler, stagePendingReview, pendingReviewId, pendingReviewComments, deletePendingReview } from './gh';
 import { hasRef, fetchPullRef, listRefs, changedLineRanges, deleteRef, detectBaseBranch, mergeBase, git } from './git';
 import { log, lastGhError, setLog, setLastGhError } from './log';
@@ -91,17 +91,17 @@ export function activate(context: vscode.ExtensionContext) {
     if (file && view.selection[0] !== file) void view.reveal(file, { select: true, focus: false }).then(undefined, () => undefined);
   };
 
-  /** Run a link's request here, or in the window showing its repo: VS Code picks the focused window. */
+  /**
+   * Run a link's request in this window: a link opens where it was clicked (VS Code hands a vscode://
+   * link to the focused window too), so a repo this window does not show joins its tree. Forwarding
+   * to a window that shows the repo opened the diff out of sight, since a window cannot be raised.
+   */
   const followLink = async (parse: () => PresentRequest) => {
     try {
       const req = parse();
-      // Prefer a window already showing the repo; with none, this one adds it to its tree.
-      const other = provider.commonDirs().includes(req.commonDir)
-        ? undefined
-        : (await windowsFor(req.commonDir, req.worktree)).find((w) => w.pid !== process.pid && w.commonDirs.includes(req.commonDir));
-      log.info(`link: present ${req.ref ?? req.worktree}${other ? ` via window ${other.pid}` : ''}`);
+      log.info(`link: present ${req.ref ?? req.worktree}`);
       const t = performance.now();
-      const reply = other ? await send(other.socket, req) : await provider.present(req, view);
+      const reply = await provider.present(req, view);
       log.info(`link: ${reply.ok ? 'opened' : 'failed'} in ${(performance.now() - t).toFixed(0)}ms`);
       if (!reply.ok) void vscode.window.showWarningMessage(`Crosscut link: ${reply.message}`);
     } catch (e) {
@@ -113,7 +113,6 @@ export function activate(context: vscode.ExtensionContext) {
     provider,
     view,
     serveCli(provider, view),
-    // `crosscut link` links: the same request `present` sends over the socket, carried in the URI.
     // `crosscut link` links: the same request `present` sends over the socket, carried in the URI.
     vscode.window.registerUriHandler({
       async handleUri(uri) {

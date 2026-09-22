@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- A clicked link opened in whichever window showed its repo, often not the one you were in, and a
+  window cannot be raised. Links now open in the window you click them in.
 - `crosscut rebase-preview` could crash at random, and a git command exiting early could take down
   the extension host.
 - One corrupt window entry made every `crosscut present` fail.
