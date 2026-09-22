@@ -998,6 +998,27 @@ class WorktreeDiffsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     if (node.stale || !node.diff) await this.reload(node);
   }
 
+  /**
+   * The changed-file row showing this document, among the open rows: a diff side is the real file
+   * (a worktree), a snapshot of it under the row's store, or a virtual document at its real path.
+   * An exact snapshot match wins, then a worktree row, since a branch row's paths point into the
+   * main checkout too.
+   */
+  fileFor(uri: vscode.Uri): FileNode | undefined {
+    const target = uri.path;
+    let loose: FileNode | undefined;
+    for (const row of this.expanded) {
+      if (!row.diff) continue;
+      for (const f of collectFiles(row.tree)) {
+        const snapshots = [snapshotDir(row.store, f.diff, f.diff.baseRef), ...(f.diff.headRef ? [snapshotDir(row.store, f.diff, f.diff.headRef)] : [])];
+        const rels = [f.change.path, ...(f.change.oldPath ? [f.change.oldPath] : [])];
+        if (snapshots.some((dir) => rels.some((rel) => vscode.Uri.file(path.join(dir, rel)).path === target))) return f;
+        if (vscode.Uri.file(f.absPath).path === target && (!loose || (loose.owner.ref && !row.ref))) loose = f;
+      }
+    }
+    return loose;
+  }
+
   /** The repos in the tree, for the CLI to find the window showing its repo. */
   commonDirs(): string[] {
     return this.repos.map((r) => r.commonDir);
@@ -2393,6 +2414,13 @@ export function activate(context: vscode.ExtensionContext) {
     await followLink(() => JSON.parse(text));
   };
 
+  /** Select the changed-file row for a document, when the tree is showing. */
+  const followInTree = (uri: vscode.Uri) => {
+    if (!view.visible) return;
+    const file = provider.fileFor(uri);
+    if (file && view.selection[0] !== file) void view.reveal(file, { select: true, focus: false }).then(undefined, () => undefined);
+  };
+
   /** Run a link's request here, or in the window showing its repo: VS Code picks the focused window. */
   const followLink = async (parse: () => PresentRequest) => {
     try {
@@ -2457,6 +2485,24 @@ export function activate(context: vscode.ExtensionContext) {
       },
       { supportsMultipleEditorsPerDocument: true },
     ),
+    // Follow the editor: select the changed-file row for whatever diff (or file) is in front.
+    vscode.window.onDidChangeActiveTextEditor((ed) => ed && followInTree(ed.document.uri)),
+    // In an Open All Changes editor, only the files on screen have editors, so the set of visible
+    // editors changes as it scrolls; the topmost of them, in the order the editor lists its files,
+    // is the one being read.
+    vscode.window.onDidChangeVisibleTextEditors((eds) => {
+      const label = vscode.window.tabGroups.activeTabGroup.activeTab?.label;
+      const all = label ? allChanges.get(label) : undefined;
+      log.info(
+        `visible editors: tab "${label}" ${all ? 'is' : 'is not'} an all-changes editor; ${eds.length} editors: ${eds
+          .map((e) => `${e.document.uri.scheme}:${path.basename(e.document.uri.path)}`)
+          .join(', ')}`,
+      );
+      if (!all) return;
+      const shown = new Set(eds.map((e) => e.document.uri.toString()));
+      const top = all.files.find((f) => shown.has(f.right.toString()) || shown.has(f.left.toString()));
+      if (top) followInTree(top.right.scheme === 'file' ? top.right : top.left);
+    }),
     view.onDidExpandElement((e) => {
       log.info(`expand ${nodeName(e.element)}`);
       provider.onExpand(e.element);
