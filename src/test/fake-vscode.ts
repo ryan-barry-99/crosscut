@@ -109,10 +109,17 @@ class RelativePattern {
   constructor(readonly base: unknown, readonly pattern: string) {}
 }
 
+/** An event nobody fires: subscribing returns a disposable. */
+const event = () => new Disposable();
+
+class TabInputText {
+  constructor(readonly uri: unknown) {}
+}
+
 const noopLog = { info() {}, warn() {}, error() {}, debug() {}, trace() {}, appendLine() {}, show() {}, dispose() {} };
 
 export const window = {
-  tabGroups: { all: [] as unknown[], activeTabGroup: { activeTab: undefined as unknown, tabs: [] as unknown[] }, close: async () => true, onDidChangeTabs: () => new Disposable() },
+  tabGroups: { all: [] as unknown[], activeTabGroup: { activeTab: undefined as unknown, tabs: [] as unknown[] }, close: async () => true, onDidChangeTabs: () => new Disposable(), onDidChangeTabGroups: () => new Disposable() },
   activeTextEditor: undefined as unknown,
   visibleTextEditors: [] as unknown[],
   createTextEditorDecorationType: () => ({ key: 'decoration', dispose() {} }),
@@ -123,6 +130,15 @@ export const window = {
   showQuickPick: async () => undefined,
   showTextDocument: async () => undefined,
   registerFileDecorationProvider: () => new Disposable(),
+  showInputBox: async () => undefined,
+  withProgress: async (_o: unknown, task: (p: unknown) => unknown) => task({ report() {} }),
+  createTreeView: () => ({ visible: true, selection: [] as unknown[], reveal: async () => undefined, onDidExpandElement: event, onDidCollapseElement: event, onDidChangeVisibility: event, onDidChangeSelection: event, dispose() {} }),
+  registerUriHandler: () => new Disposable(),
+  registerCustomEditorProvider: () => new Disposable(),
+  onDidChangeActiveTextEditor: event,
+  onDidChangeVisibleTextEditors: event,
+  onDidChangeWindowState: event,
+  onDidChangeTextEditorSelection: event,
 };
 
 export const workspace = {
@@ -131,14 +147,25 @@ export const workspace = {
   createFileSystemWatcher: () => ({ onDidChange: () => new Disposable(), onDidCreate: () => new Disposable(), onDidDelete: () => new Disposable(), dispose() {} }),
   openTextDocument: async () => ({}),
   registerTextDocumentContentProvider: () => new Disposable(),
+  onDidChangeConfiguration: event,
+  onDidChangeWorkspaceFolders: event,
+  onDidOpenTextDocument: event,
+  onDidCloseTextDocument: event,
+  textDocuments: [] as unknown[],
 };
+
+export const env = { uriScheme: 'vscode', opened: [] as string[], openExternal: async (uri: unknown) => (env.opened.push(String(uri)), true) };
+export const registered = new Map<string, (...args: unknown[]) => unknown>();
 
 export const commands = {
   executeCommand: async (command: string, ...args: unknown[]) => {
     executed.push({ command, args });
     return undefined;
   },
-  registerCommand: () => new Disposable(),
+  registerCommand: (name: string, fn: (...args: unknown[]) => unknown) => {
+    registered.set(name, fn);
+    return new Disposable(() => registered.delete(name));
+  },
 };
 
 export const comments = {
@@ -168,6 +195,9 @@ const vscode = {
   commands,
   comments,
   languages: { registerHoverProvider: () => new Disposable() },
+  env,
+  TabInputText,
+  ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
 };
 
 const load = (Module as unknown as { _load: (request: string, ...rest: unknown[]) => unknown });
